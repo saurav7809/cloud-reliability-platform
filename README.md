@@ -78,6 +78,24 @@ This cluster becomes AegisCloud's first registered `cluster` row once the Deploy
 (Phase 3) can register/target it — see [03-database.md](docs/phase-1-architecture/03-database.md).
 It is registered exactly like a real EKS/AKS/GKE cluster, just with `provider_type = KIND`.
 
+## Dashboard
+
+Six screens over the platform API, styled as a dark operator console:
+
+| Screen | Shows |
+|---|---|
+| **Overview** | Fleet stat tiles, 14-day reliability trend, cross-cloud score comparison, control-plane engine status, observability sources |
+| **Clusters** | Every registered cluster (EKS / AKS / GKE / kind) plus Policy Engine guardrails per cluster |
+| **Services** | Service cards and the full deployment-target table — replicas, availability, p95, error rate, cost, score |
+| **Control Plane** | Auto-Scaling decisions and Self-Healing actions with their triggers |
+| **Reliability** | SLO attainment, error-budget burn-rate bars, chaos experiments with before/during/after impact |
+| **Alerts** | Alert feed with working acknowledge/resolve actions (OPERATOR+ only) |
+
+> **On the data:** the fleet is a seeded demo fleet served from the real API contract, so
+> the UI has a realistic platform to render before persistence exists. It is **not** reading
+> live cluster state — that begins in Phase 3 when the Deployment Engine connects via
+> client-go. The dashboard says so on its Overview screen rather than implying live data.
+
 ## Verified So Far
 
 - `go vet` and `go build` pass; the backend Docker image builds and runs.
@@ -86,6 +104,8 @@ It is registered exactly like a real EKS/AKS/GKE cluster, just with `provider_ty
   Wrong password and missing token both correctly return 401.
 - `kind` cluster `aegiscloud-local` created and healthy (control-plane node `Ready`,
   Kubernetes v1.37.0), with the `aegiscloud` namespace applied.
+- All six dashboard screens rendered and clicked through in a browser with no console
+  errors; acknowledging an alert round-trips through the API and updates the badge count.
 - The in-memory user store in `internal/auth/store.go` is a deliberate Phase 2 simplification —
   it will be replaced by the `app_user` table once persistence lands with the Deployment Engine.
 
