@@ -1,0 +1,199 @@
+# Three deployments of the same failable image, differing only in config.
+#
+# Memory limits are deliberately small so `POST /chaos/leak?mb=96` actually gets
+# the pod OOMKilled instead of just growing the heap — that is what produces a
+# genuine healing event for AegisCloud to observe.
+#
+# catalog-service starts pre-degraded (latency + errors) so the fleet is not
+# uniformly green on first boot and SLO burn has something to show.
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: checkout-service
+  namespace: aegiscloud
+  labels:
+    app.kubernetes.io/name: checkout-service
+    aegiscloud.io/managed: "true"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: checkout-service
+  template:
+    metadata:
+      labels:
+        app: checkout-service
+        aegiscloud.io/managed: "true"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      containers:
+        - name: app
+          image: aegiscloud/sample-service:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            - name: SERVICE_NAME
+              value: checkout-service
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 300m
+              memory: 128Mi
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: checkout-service
+  namespace: aegiscloud
+spec:
+  selector:
+    app: checkout-service
+  ports:
+    - port: 80
+      targetPort: 8080
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: catalog-service
+  namespace: aegiscloud
+  labels:
+    app.kubernetes.io/name: catalog-service
+    aegiscloud.io/managed: "true"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: catalog-service
+  template:
+    metadata:
+      labels:
+        app: catalog-service
+        aegiscloud.io/managed: "true"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      containers:
+        - name: app
+          image: aegiscloud/sample-service:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            - name: SERVICE_NAME
+              value: catalog-service
+            # Starts degraded on purpose, so SLO burn is visible immediately.
+            - name: CHAOS_LATENCY_MS
+              value: "300"
+            - name: CHAOS_ERROR_RATE_PCT
+              value: "8"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 300m
+              memory: 128Mi
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: catalog-service
+  namespace: aegiscloud
+spec:
+  selector:
+    app: catalog-service
+  ports:
+    - port: 80
+      targetPort: 8080
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-service
+  namespace: aegiscloud
+  labels:
+    app.kubernetes.io/name: auth-service
+    aegiscloud.io/managed: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: auth-service
+  template:
+    metadata:
+      labels:
+        app: auth-service
+        aegiscloud.io/managed: "true"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      containers:
+        - name: app
+          image: aegiscloud/sample-service:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            - name: SERVICE_NAME
+              value: auth-service
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 96Mi
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth-service
+  namespace: aegiscloud
+spec:
+  selector:
+    app: auth-service
+  ports:
+    - port: 80
+      targetPort: 8080

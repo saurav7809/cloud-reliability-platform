@@ -13,3 +13,6 @@ web/dist/
 # OS
 .DS_Store
 Thumbs.db
+
+# Compiled workload binaries
+workloads/sample-service/sample-service

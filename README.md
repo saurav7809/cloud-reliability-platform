@@ -35,11 +35,13 @@ docs/phase-1-architecture/
 ## Repo Layout
 
 ```
-backend/    Go API server (chi router, JWT auth) — Deployment/Control Plane/Evaluation/
-            Experiment engines land in later phases
-web/        React + Vite + TypeScript dashboard — login screen wired to the backend
+backend/    Go API server (chi router, JWT auth, OpenAPI) — Deployment/Control Plane/
+            Evaluation/Experiment engines land in later phases
+web/        React + Vite + TypeScript operator dashboard
+workloads/  Deliberately failable sample service + manifests, so the platform has real
+            pods to scale, heal and break (see workloads/README.md)
 infra/
-  kind/     kind-config.yaml — local Kubernetes cluster definition (Phase 3 deploy target)
+  kind/     kind-config.yaml — local Kubernetes cluster definition
   k8s/      base manifests (namespace, etc.)
 docker-compose.yml   local dev: backend on :8080, frontend dev server on :5173
 ```
@@ -77,6 +79,13 @@ kubectl apply -f infra/k8s/namespace.yaml
 This cluster becomes AegisCloud's first registered `cluster` row once the Deployment Engine
 (Phase 3) can register/target it — see [03-database.md](docs/phase-1-architecture/03-database.md).
 It is registered exactly like a real EKS/AKS/GKE cluster, just with `provider_type = KIND`.
+
+**Deploy the sample workloads** onto it, so there are real pods to scale, heal and break:
+```bash
+./workloads/deploy.sh
+```
+Three services, five pods, each able to crash, leak memory, inject latency or return errors on
+demand — see [workloads/README.md](workloads/README.md).
 
 ## Dashboard
 
