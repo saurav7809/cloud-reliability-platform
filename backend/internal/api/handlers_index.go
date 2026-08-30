@@ -18,6 +18,8 @@ var endpointGroups = []struct {
 }{
 	{"Public", []endpoint{
 		{"GET", "/healthz", "Liveness / readiness probe", "none"},
+		{"GET", "/swagger", "Interactive Swagger UI", "none"},
+		{"GET", "/openapi.yaml", "OpenAPI 3.0 specification", "none"},
 		{"POST", "/api/v1/auth/login", "Exchange email + password for a JWT", "none"},
 	}},
 	{"Identity", []endpoint{

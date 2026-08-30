@@ -1,0 +1,540 @@
+openapi: 3.0.3
+
+info:
+  title: AegisCloud API
+  version: 0.2.0
+  description: |
+    Cloud-agnostic reliability & evaluation platform.
+
+    Every cluster is reached through the standard Kubernetes API using its kubeconfig,
+    so AWS EKS, Azure AKS, GCP GKE and a local kind cluster are interchangeable targets
+    rather than special cases. No endpoint below branches on cloud provider — `provider`
+    is a label, not control flow.
+
+    **Phase 2 status.** Fleet data is a seeded demo fleet served from this contract so the
+    dashboard has a realistic platform to render before persistence exists. It is not read
+    from live clusters — that begins in Phase 3 with the client-go Deployment Engine.
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+tags:
+  - name: System
+    description: Service metadata and health
+  - name: Auth
+    description: Login and identity
+  - name: Registry
+    description: Clusters, services and deployment targets
+  - name: Reliability
+    description: SLOs, error budgets and chaos experiments
+  - name: Control Plane
+    description: Auto-Scaling and Self-Healing activity
+  - name: Alerts
+    description: Alert feed and lifecycle
+
+security:
+  - bearerAuth: []
+
+paths:
+  /healthz:
+    get:
+      operationId: getHealth
+      tags: [System]
+      summary: Liveness / readiness probe
+      security: []
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  service: { type: string, example: aegiscloud-backend }
+                  version: { type: string, example: v0.2.0 }
+                  time: { type: string, format: date-time }
+
+  /api/v1/auth/login:
+    post:
+      operationId: login
+      tags: [Auth]
+      summary: Exchange email and password for a JWT
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email, example: admin@aegiscloud.local }
+                password: { type: string, format: password, example: changeme123 }
+      responses:
+        "200":
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken: { type: string, description: "JWT, valid 24h" }
+                  role: { $ref: "#/components/schemas/Role" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/auth/me:
+    get:
+      operationId: getCurrentUser
+      tags: [Auth]
+      summary: Current user profile and role
+      responses:
+        "200":
+          description: Profile of the authenticated user
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  email: { type: string, format: email }
+                  role: { $ref: "#/components/schemas/Role" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/overview:
+    get:
+      operationId: getOverview
+      tags: [Registry]
+      summary: Fleet rollup powering the dashboard
+      description: Aggregated stats, 14-day score trend, per-provider comparison, engine status.
+      responses:
+        "200":
+          description: Fleet overview
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Overview" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/clusters:
+    get:
+      operationId: listClusters
+      tags: [Registry]
+      summary: List registered clusters
+      description: EKS, AKS, GKE and local kind clusters, distinguished only by `provider`.
+      responses:
+        "200":
+          description: Registered clusters
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Cluster" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/services:
+    get:
+      operationId: listServices
+      tags: [Registry]
+      summary: List registered services
+      responses:
+        "200":
+          description: Services
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Service" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/targets:
+    get:
+      operationId: listDeploymentTargets
+      tags: [Registry]
+      summary: List deployment targets
+      description: A target is one service on one cluster — the unit that is scaled, healed, evaluated and scored.
+      responses:
+        "200":
+          description: Deployment targets
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/DeploymentTarget" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/policies:
+    get:
+      operationId: listPolicies
+      tags: [Registry]
+      summary: Policy Engine guardrails per cluster
+      description: Checked before any Auto-Scaling, Self-Healing or fault-injection action runs.
+      responses:
+        "200":
+          description: Policies
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Policy" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/slos:
+    get:
+      operationId: listSlos
+      tags: [Reliability]
+      summary: SLOs with error budget and burn rate
+      responses:
+        "200":
+          description: Service level objectives
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Slo" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/experiment-runs:
+    get:
+      operationId: listExperimentRuns
+      tags: [Reliability]
+      summary: Chaos experiment runs
+      description: Includes before / during / after reliability score for each run.
+      responses:
+        "200":
+          description: Experiment runs
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ExperimentRun" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/control-plane/scaling-events:
+    get:
+      operationId: listScalingEvents
+      tags: [Control Plane]
+      summary: Auto-Scaling decisions
+      responses:
+        "200":
+          description: Scaling events, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ScalingEvent" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/control-plane/healing-events:
+    get:
+      operationId: listHealingEvents
+      tags: [Control Plane]
+      summary: Self-Healing actions
+      responses:
+        "200":
+          description: Healing events, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/HealingEvent" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/alerts:
+    get:
+      operationId: listAlerts
+      tags: [Alerts]
+      summary: Alert feed
+      responses:
+        "200":
+          description: Alerts, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Alert" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/alerts/{alertId}/acknowledge:
+    post:
+      operationId: acknowledgeAlert
+      tags: [Alerts]
+      summary: Acknowledge an alert
+      description: Requires ADMIN or OPERATOR. VIEWER is read-only.
+      parameters:
+        - $ref: "#/components/parameters/AlertId"
+      responses:
+        "200": { $ref: "#/components/responses/AlertStatusChanged" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/alerts/{alertId}/resolve:
+    post:
+      operationId: resolveAlert
+      tags: [Alerts]
+      summary: Resolve an alert
+      description: Requires ADMIN or OPERATOR. VIEWER is read-only.
+      parameters:
+        - $ref: "#/components/parameters/AlertId"
+      responses:
+        "200": { $ref: "#/components/responses/AlertStatusChanged" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        Obtain a token from `POST /api/v1/auth/login`, then send it as
+        `Authorization: Bearer <token>`.
+
+  parameters:
+    AlertId:
+      name: alertId
+      in: path
+      required: true
+      schema: { type: string }
+      example: al-1
+
+  responses:
+    BadRequest:
+      description: Malformed request body
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: Missing, malformed or expired bearer token
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: Authenticated but the role lacks permission
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Resource does not exist
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    AlertStatusChanged:
+      description: New alert status
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              id: { type: string, example: al-1 }
+              status: { $ref: "#/components/schemas/AlertStatus" }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string, example: UNAUTHORIZED }
+        message: { type: string, example: missing bearer token }
+
+    Role:
+      type: string
+      enum: [ADMIN, OPERATOR, VIEWER]
+
+    Provider:
+      type: string
+      description: Metadata label for grouping and comparison — never branches control flow.
+      enum: [AWS, GCP, AZURE, KIND, ON_PREM]
+
+    AlertStatus:
+      type: string
+      enum: [OPEN, ACKNOWLEDGED, RESOLVED]
+
+    Cluster:
+      type: object
+      properties:
+        id: { type: string, example: cl-eks-use1 }
+        name: { type: string, example: prod-eks-use1 }
+        provider: { $ref: "#/components/schemas/Provider" }
+        distribution: { type: string, example: EKS }
+        region: { type: string, example: us-east-1 }
+        status: { type: string, enum: [HEALTHY, DEGRADED, UNREACHABLE] }
+        nodeCount: { type: integer, example: 6 }
+        k8sVersion: { type: string, example: v1.30.2 }
+        isLocal: { type: boolean }
+
+    Service:
+      type: object
+      properties:
+        id: { type: string, example: svc-checkout }
+        name: { type: string, example: checkout-service }
+        ownerTeam: { type: string, example: payments }
+        description: { type: string }
+        tags:
+          type: object
+          additionalProperties: { type: string }
+          example: { env: prod, tier: critical }
+
+    DeploymentTarget:
+      type: object
+      properties:
+        id: { type: string, example: tgt-01 }
+        serviceId: { type: string }
+        serviceName: { type: string, example: checkout-service }
+        clusterId: { type: string }
+        clusterName: { type: string, example: prod-eks-use1 }
+        provider: { $ref: "#/components/schemas/Provider" }
+        region: { type: string }
+        namespace: { type: string, example: checkout }
+        scalingStrategy: { type: string, enum: [CPU, LATENCY, TREND, NONE] }
+        status: { type: string, enum: [HEALTHY, DEGRADED, DEPLOYING, FAILED] }
+        replicas: { type: integer, example: 6 }
+        desiredReplicas: { type: integer, example: 6 }
+        reliabilityScore: { type: number, format: double, example: 96.4 }
+        availabilityPct: { type: number, format: double, example: 99.94 }
+        latencyP95Ms: { type: number, format: double, example: 182.4 }
+        errorRatePct: { type: number, format: double, example: 0.06 }
+        monthlyCostUsd: { type: number, format: double, example: 1284.5 }
+
+    Slo:
+      type: object
+      properties:
+        id: { type: string }
+        targetId: { type: string }
+        targetLabel: { type: string, example: checkout-service @ prod-eks-use1 }
+        sliType: { type: string, enum: [AVAILABILITY, LATENCY_P95, LATENCY_P99, ERROR_RATE, THROUGHPUT] }
+        objectiveValue: { type: number, format: double, example: 99.9 }
+        windowDays: { type: integer, example: 30 }
+        currentValue: { type: number, format: double, example: 99.94 }
+        budgetRemainingPct: { type: number, format: double, example: 62 }
+        burnRate:
+          type: number
+          format: double
+          description: Multiples of the sustainable burn rate. Above 1.0 exhausts the budget early.
+          example: 0.7
+
+    ScalingEvent:
+      type: object
+      properties:
+        id: { type: string }
+        targetId: { type: string }
+        targetLabel: { type: string }
+        previousReplicas: { type: integer, example: 6 }
+        newReplicas: { type: integer, example: 8 }
+        triggerMetric: { type: string, example: CPU }
+        triggerValue: { type: number, format: double, example: 81.4 }
+        strategy: { type: string, enum: [CPU, LATENCY, TREND, NONE] }
+        decidedAt: { type: string, format: date-time }
+
+    HealingEvent:
+      type: object
+      properties:
+        id: { type: string }
+        targetId: { type: string }
+        targetLabel: { type: string }
+        podName: { type: string, example: catalog-7d9f4b-x2mq }
+        reason: { type: string, example: CRASH_LOOP }
+        actionTaken: { type: string, enum: [RESTARTED, RESCHEDULED, ESCALATED] }
+        detectedAt: { type: string, format: date-time }
+        resolvedAt: { type: string, format: date-time, nullable: true }
+
+    Alert:
+      type: object
+      properties:
+        id: { type: string, example: al-1 }
+        targetId: { type: string }
+        targetLabel: { type: string }
+        severity: { type: string, enum: [LOW, MEDIUM, HIGH, CRITICAL] }
+        status: { $ref: "#/components/schemas/AlertStatus" }
+        message: { type: string }
+        openedAt: { type: string, format: date-time }
+
+    ExperimentRun:
+      type: object
+      properties:
+        id: { type: string }
+        serviceName: { type: string }
+        targetLabel: { type: string }
+        runType: { type: string, enum: [SCHEDULED_PROBE, CHAOS, MANUAL] }
+        faultType: { type: string, example: LATENCY_INJECTION }
+        status:
+          type: string
+          enum: [RUNNING, COMPLETED, FAILED, ABORTED, REJECTED_BY_POLICY]
+          description: REJECTED_BY_POLICY means the Policy Engine blocked the run before it started.
+        scoreBefore: { type: number, format: double }
+        scoreDuring: { type: number, format: double }
+        scoreAfter: { type: number, format: double }
+        startedAt: { type: string, format: date-time }
+        endedAt: { type: string, format: date-time, nullable: true }
+
+    Policy:
+      type: object
+      properties:
+        id: { type: string }
+        clusterId: { type: string }
+        clusterName: { type: string }
+        maxReplicas: { type: integer, example: 20 }
+        maxConcurrentExperiments:
+          type: integer
+          description: Blast-radius limit. Zero blocks all fault injection on the cluster.
+          example: 2
+        protectedNamespaces:
+          type: array
+          items: { type: string }
+          example: [kube-system, istio-system]
+
+    Overview:
+      type: object
+      properties:
+        totalClusters: { type: integer }
+        healthyClusters: { type: integer }
+        totalServices: { type: integer }
+        totalTargets: { type: integer }
+        totalReplicas: { type: integer }
+        openAlerts: { type: integer }
+        avgScore: { type: number, format: double }
+        monthlyCostUsd: { type: number, format: double }
+        scoreByProvider:
+          type: array
+          items:
+            type: object
+            properties:
+              provider: { $ref: "#/components/schemas/Provider" }
+              score: { type: number, format: double }
+              targets: { type: integer }
+              costUsd: { type: number, format: double }
+        scoreTrend:
+          type: array
+          items:
+            type: object
+            properties:
+              date: { type: string, example: Aug 30 }
+              score: { type: number, format: double }
+        recentScaling:
+          type: array
+          items: { $ref: "#/components/schemas/ScalingEvent" }
+        recentHealing:
+          type: array
+          items: { $ref: "#/components/schemas/HealingEvent" }
+        engineStatus:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string, example: Auto-Scaling }
+              status: { type: string, example: ACTIVE }
+              detail: { type: string }
+              actionsLast24h: { type: integer }
+        observabilityFeed:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string, example: Prometheus }
+              kind: { type: string, example: Metrics }
+              status: { type: string, example: CONNECTED }
+              ingestRate: { type: string, example: 12.4k samples/s }

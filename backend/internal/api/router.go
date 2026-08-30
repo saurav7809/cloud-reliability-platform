@@ -39,6 +39,10 @@ func NewRouter() http.Handler {
 	r.Get("/", IndexHandler)
 	r.Get("/healthz", HealthHandler)
 
+	// API documentation is public in dev so the spec is reachable without a token.
+	r.Get("/openapi.yaml", OpenAPISpecHandler)
+	r.Get("/swagger", SwaggerUIHandler)
+
 	r.Route("/api/v1", func(v1 chi.Router) {
 		v1.Post("/auth/login", authHandlers.Login)
 
