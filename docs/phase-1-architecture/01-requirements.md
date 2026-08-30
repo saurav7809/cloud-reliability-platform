@@ -67,7 +67,9 @@ within policy limits.
 - **RCA on signals it cannot see.** A cause outside the observed graph and telemetry (a bad
   third-party API, a corrupted record) will be reported as *undiagnosed*, never guessed at.
 
-## 5. Personas
+## 5. Users & Use Cases
+
+### 5.1 Personas
 
 | Persona | Needs |
 |---|---|
@@ -76,6 +78,124 @@ within policy limits.
 | **Developer (service owner)** | See why *their* service degraded — and whether the cause was actually a dependency they do not own |
 | **On-call responder** | One diagnosed incident with a ranked cause and blast radius, not forty correlated pages |
 | **Admin** | Manage users, clusters, integrations, retention, and how autonomous the platform is allowed to be |
+
+### 5.2 Use Cases
+
+Each use case names its actor, what triggers it, the flow, and the requirements it exercises.
+UC-4 is the flagship — it is the reason the Intelligence Layer exists.
+
+---
+
+**UC-1 — Onboard a service and set a reliability target**
+*Actor:* SRE · *Trigger:* a new microservice is ready for production
+
+1. Registers the service (name, owner team, tags).
+2. Registers or selects the cluster it will run on.
+3. Creates a deployment target (service × cluster) and adds its endpoints.
+4. Defines an SLO — "99.9% availability over rolling 30 days".
+5. Platform begins probing and computing error budget within one interval.
+
+*Outcome:* the service has a measurable reliability target. *Exercises:* FR-1→4, 11→14.
+*Success criterion:* under 5 minutes end to end.
+
+---
+
+**UC-2 — Deploy a service to a cluster**
+*Actor:* SRE / Operator · *Trigger:* a release is ready
+
+1. Selects a target and triggers deploy.
+2. Deployment Engine renders Deployment/Service/HPA manifests and applies them via client-go.
+3. Rollout progress and pod readiness stream back to the dashboard.
+4. If the rollout fails, the operator rolls back to the previous revision.
+
+*Outcome:* workload running, deployment recorded as a change event RCA can later correlate
+against. *Exercises:* FR-5→7.
+
+---
+
+**UC-3 — Compare the same service across two clouds**
+*Actor:* Engineering Manager · *Trigger:* evaluating a migration, or justifying multi-cloud spend
+
+1. Opens the service and views its targets side by side.
+2. Compares reliability score, availability, p95 latency and monthly cost per provider.
+3. Reviews the score trend to confirm the difference is sustained, not a blip.
+
+*Outcome:* a provider decision backed by comparable numbers rather than vendor dashboards that
+cannot be compared. *Exercises:* FR-19→21.
+
+---
+
+**UC-4 — Diagnose an incident instead of chasing alerts** ★
+*Actor:* On-call responder · *Trigger:* three services breach their SLOs within a minute
+
+1. Without AegisCloud: three alerts page three teams, each investigating a service that is
+   working correctly, because the real fault is upstream.
+2. Dependency analysis identifies that two of the three depend on the third.
+3. RCA correlates four signals — graph position, temporal ordering (auth degraded 45s first), a
+   deployment 6 minutes prior, and CPU throttling.
+4. Responder opens **one** incident: cause `auth-service`, confidence 0.91, blast radius
+   `checkout-service` + `catalog-service`, with the evidence cited.
+5. The two downstream alerts are grouped under the cause rather than paging separately.
+6. Responder marks the verdict correct, feeding the precision@1 metric.
+
+*Outcome:* one team engaged on the actual fault, instead of three teams debugging symptoms.
+*Exercises:* FR-22→30, 41.
+
+---
+
+**UC-5 — Prove resilience before an outage does**
+*Actor:* SRE · *Trigger:* pre-launch resilience review
+
+1. Selects a target and a fault (latency injection, pod kill, resource starvation).
+2. Policy Engine validates blast radius; the run is rejected outright if it exceeds limits.
+3. Experiment Engine injects the fault and captures before / during / after scores.
+4. Report shows whether SLOs held, how far the failure propagated, and recovery time.
+
+*Outcome:* a known weakness found deliberately, plus a labelled incident whose true cause is
+known — the ground truth RCA accuracy is measured against. *Exercises:* FR-10, 17→18.
+
+---
+
+**UC-6 — Let the platform remediate unattended**
+*Actor:* SRE (configuring) → platform (acting) · *Trigger:* traffic spike at 03:00
+
+1. Admin sets autonomy for `SCALE_UP` on this cluster to `ACT`; everything else stays `SUGGEST`.
+2. Platform observes CPU saturation, diagnoses insufficient capacity, checks the Policy Engine
+   (within max replicas), and scales up.
+3. It records observed → concluded → executed, then verifies whether the score recovered.
+4. If the score does not improve within the window, the action is rolled back and a human is
+   paged.
+
+*Outcome:* routine, well-understood remediation happens without waking anyone; anything
+uncertain still escalates. *Exercises:* FR-8, 10, 35→38, 43.
+
+---
+
+**UC-7 — Cut cost without silently cutting reliability**
+*Actor:* Engineering Manager / Operator · *Trigger:* quarterly cost review
+
+1. Opens recommendations, sorted by estimated saving.
+2. Reads: "Reduce catalog-service 5 → 3 replicas — p95 CPU 18% over 14 days — save ~$276/mo —
+   reliability impact: LOW."
+3. Applies it; the Policy Engine gates the change and RBAC is enforced.
+4. Platform records the outcome, so a recommendation that hurt reliability is visible afterwards
+   rather than forgotten.
+
+*Outcome:* savings taken with the reliability trade-off stated up front, and bad advice traceable
+after the fact. *Exercises:* FR-31→34.
+
+---
+
+**UC-8 — Understand blast radius before a risky change**
+*Actor:* Developer · *Trigger:* planning a breaking change to a shared service
+
+1. Opens the service's blast radius view.
+2. Sees every downstream service that would be affected, ranked by dependency strength, with
+   graph completeness stated (e.g. "0.82 — 1 service uninstrumented").
+3. Notifies the affected owners before shipping.
+
+*Outcome:* the coordination cost of a change is known before it is made, not after.
+*Exercises:* FR-22→25.
 
 ## 6. Functional Requirements
 

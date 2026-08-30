@@ -45,11 +45,25 @@ and RCA needs the chaos engine (Phase 6) to supply incidents whose true cause is
 
 ```
 docs/phase-1-architecture/
-├── 01-requirements.md   — problem statement, personas, functional/non-functional requirements
-├── 02-architecture.md   — AegisCloud component diagram, cloud-agnostic boundary, Go stack, ADRs
-├── 03-database.md       — full schema, ER overview, retention strategy
-└── 04-apis.md           — REST API contract for the MVP
+├── 00-phase-1-checklist.md — sign-off map: all 7 Phase 1 deliverables and where each is met
+├── 01-requirements.md      — problem, 5 personas, 8 use cases, 45 FRs, 10 NFR categories
+├── 02-architecture.md      — component diagram, Intelligence Layer, autonomous loop,
+│                             cloud-agnostic boundary, module breakdown, 12 ADRs
+├── 03-database.md          — 23 tables, ER overview, retention strategy
+└── 04-apis.md              — full REST API contract
 ```
+
+**Phase 1 deliverables** — all seven complete:
+
+| # | Deliverable | Where |
+|---|---|---|
+| 1 | Define Real-World Problem | [§2](docs/phase-1-architecture/01-requirements.md) |
+| 2 | Define Users & Use Cases | [§5](docs/phase-1-architecture/01-requirements.md) |
+| 3 | Define Functional Requirements | [§6](docs/phase-1-architecture/01-requirements.md) |
+| 4 | Define Non-Functional Requirements | [§7](docs/phase-1-architecture/01-requirements.md) |
+| 5 | Design System Architecture | [02-architecture.md](docs/phase-1-architecture/02-architecture.md) |
+| 6 | Design Database Schema | [03-database.md](docs/phase-1-architecture/03-database.md) |
+| 7 | Design API Architecture | [04-apis.md](docs/phase-1-architecture/04-apis.md) |
 
 ## Repo Layout
 
