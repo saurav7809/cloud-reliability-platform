@@ -173,6 +173,102 @@ POST /api/v1/services/{serviceId}/evaluation-runs
 | POST | `/alerts/{alertId}/acknowledge` | Acknowledge an alert | ADMIN, OPERATOR |
 | POST | `/alerts/{alertId}/resolve` | Resolve an alert | ADMIN, OPERATOR |
 
+## 10a. Dependency Graph (Phase 7)
+
+| Method | Path | Description | Roles |
+|---|---|---|---|
+| GET | `/graph` | Full service dependency graph (nodes + edges) | any |
+| GET | `/graph/services/{serviceId}/blast-radius` | Transitive downstream services affected if this one degrades | any |
+| GET | `/graph/services/{serviceId}/dependencies` | Direct dependencies of a service | any |
+| GET | `/graph/critical-path` | Services on the critical path | any |
+| GET | `/graph/spof` | Single points of failure, ranked by reach | any |
+| POST | `/graph/edges` | Manually declare an edge (uninstrumented services) | ADMIN, OPERATOR |
+| DELETE | `/graph/edges/{edgeId}` | Remove a manually declared edge | ADMIN |
+
+**Example — blast radius:**
+```json
+{
+  "serviceId": "svc-auth",
+  "affected": [
+    { "serviceId": "svc-checkout", "hops": 1, "dependencyStrength": 0.94 },
+    { "serviceId": "svc-catalog",  "hops": 1, "dependencyStrength": 0.71 }
+  ],
+  "graphCompleteness": 0.82,
+  "note": "1 service is uninstrumented; blast radius may be incomplete."
+}
+```
+
+## 10b. Incidents & Root Cause Analysis (Phase 8)
+
+| Method | Path | Description | Roles |
+|---|---|---|---|
+| GET | `/incidents` | List incidents (filter by status) | any |
+| GET | `/incidents/{incidentId}` | Incident detail incl. grouped alerts and blast radius | any |
+| GET | `/incidents/{incidentId}/rca` | Ranked candidate causes with evidence | any |
+| POST | `/incidents/{incidentId}/rca/{verdictId}/feedback` | Mark a verdict correct/incorrect (feeds precision@1) | ADMIN, OPERATOR |
+| POST | `/incidents/{incidentId}/resolve` | Resolve an incident | ADMIN, OPERATOR |
+| GET | `/incidents/stream` | SSE stream of incident and diagnosis updates | any |
+
+**Example — RCA response:**
+```json
+{
+  "incidentId": "inc-42",
+  "candidates": [
+    {
+      "verdictId": "v-1",
+      "rank": 1,
+      "target": "auth-service @ prod-eks-use1",
+      "confidence": 0.91,
+      "reasoning": "Degraded 45s before downstream services; both affected services depend on it; deployed 6m prior; CPU throttling observed.",
+      "signalScores": {
+        "graphPosition": 0.95, "temporalOrder": 0.92,
+        "changeEvents": 0.88, "saturation": 0.79
+      },
+      "evidence": {
+        "traceEdges": ["checkout->auth", "catalog->auth"],
+        "firstDegradedAt": "2026-08-30T09:14:02Z",
+        "deploymentId": "dep-8812",
+        "metrics": ["container_cpu_cfs_throttled_seconds_total"]
+      }
+    }
+  ],
+  "blastRadius": ["checkout-service", "catalog-service"]
+}
+```
+
+## 10c. Optimization Recommendations (Phase 9)
+
+| Method | Path | Description | Roles |
+|---|---|---|---|
+| GET | `/recommendations` | List recommendations (filter by kind/status) | any |
+| GET | `/recommendations/{recId}` | Detail incl. evidence and reliability impact | any |
+| POST | `/recommendations/{recId}/apply` | Apply it (Policy Engine gated) | ADMIN, OPERATOR |
+| POST | `/recommendations/{recId}/dismiss` | Dismiss it | ADMIN, OPERATOR |
+
+**Example — recommendation:**
+```json
+{
+  "id": "rec-7",
+  "target": "catalog-service @ prod-aks-weu",
+  "kind": "REDUCE_REPLICAS",
+  "title": "Reduce replicas 5 → 3",
+  "rationale": "p95 CPU utilisation 18% over 14 days; peak 34%.",
+  "estimatedMonthlySavingUsd": 275.80,
+  "reliabilityImpact": "LOW",
+  "status": "OPEN",
+  "pricingNote": "Directional — based on published list pricing, not negotiated rates."
+}
+```
+
+## 10d. Autonomy (Phase 4+)
+
+| Method | Path | Description | Roles |
+|---|---|---|---|
+| GET | `/autonomy` | Current autonomy level per cluster and action type | any |
+| PUT | `/autonomy` | Set an autonomy level (`OBSERVE`/`SUGGEST`/`ACT`) | ADMIN |
+| GET | `/autonomous-actions` | History of autonomous actions and their outcomes | any |
+| GET | `/autonomous-actions/{actionId}` | Full record: observed → concluded → executed → verified | any |
+
 ## 11. Audit
 
 | Method | Path | Description | Roles |

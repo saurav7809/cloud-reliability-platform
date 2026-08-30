@@ -2,24 +2,44 @@
 
 ## 1. Product Summary
 
-**AegisCloud** is a cloud-agnostic reliability platform that *deploys* services onto Kubernetes
-clusters on any provider, *controls* them there (auto-scaling, self-healing, policy guardrails),
-and *evaluates* them (SLOs, synthetic probes, chaos experiments) — producing comparable
-reliability scorecards across providers, regions, or architectural strategies, without the core
-platform ever depending on a specific cloud vendor's SDK.
+**AegisCloud is a cloud-agnostic autonomous reliability platform for microservice applications.**
+It continuously monitors distributed systems, performs controlled failure experiments,
+automatically scales and heals services, analyzes service dependencies and failure propagation,
+performs intelligent root-cause analysis, evaluates application resilience, and recommends cost
+and performance optimizations across heterogeneous cloud environments.
+
+Two words in that statement carry most of the design weight:
+
+- **Autonomous** — the platform closes the loop on its own. It does not stop at showing a
+  dashboard: it observes, diagnoses, decides, acts, and records what it did. Human approval is a
+  *policy setting*, not a structural requirement. Every autonomous action passes the Policy
+  Engine first and lands in the audit log.
+- **Microservice applications** — the unit of analysis is a *dependency graph of services*, not
+  one isolated workload. This is what makes failure-propagation analysis and root-cause analysis
+  meaningful: a checkout failure caused by an auth timeout is only diagnosable if the platform
+  knows checkout calls auth.
 
 "Cloud-agnostic" is achieved by talking to every cluster the same way: through the standard
 Kubernetes API (`client-go`) against a registered cluster's kubeconfig. AWS EKS, Azure AKS, and
-GCP GKE are distinguished only by which kubeconfig context is used and a `provider` label — the
-Deployment Engine, Control Plane, and Evaluation Engine never branch on provider type.
+GCP GKE are distinguished only by which kubeconfig context is used and a `provider` label — no
+engine branches on provider type.
 
 ## 2. Problem Statement
 
-Teams running services across multiple clouds (or evaluating a migration between clouds) lack a
-single, vendor-neutral way to answer: *"Is this service reliable, per the SLOs we set, and how
-does it compare to the same service on a different provider/region/architecture?"* Each cloud's
-native tooling (CloudWatch, Cloud Monitoring, Azure Monitor) reports differently, uses different
-terminology, and can't produce an apples-to-apples comparison.
+Teams running microservices across multiple clouds face three compounding problems:
+
+1. **No common yardstick.** Each cloud's native tooling (CloudWatch, Cloud Monitoring, Azure
+   Monitor) reports differently and cannot produce an apples-to-apples reliability comparison.
+2. **Symptoms are not causes.** In a dependency graph, one slow service produces alerts across
+   every service that calls it. Teams page the wrong owner and debug the wrong system, because
+   the tooling shows *where it hurts*, not *where it broke*.
+3. **Reliability work is reactive.** Weaknesses are discovered by outages rather than by
+   controlled experiments, and remediation is manual even when the correct action is obvious and
+   repeatable.
+
+AegisCloud addresses all three: a provider-neutral scoring model, a dependency-aware RCA engine
+that distinguishes root cause from blast radius, and an autonomous control loop that remediates
+within policy limits.
 
 ## 3. Goals (Phase 1 scope)
 
@@ -39,15 +59,23 @@ terminology, and can't produce an apples-to-apples comparison.
 - Mobile clients.
 - Replacing the observability stack (Prometheus/Loki/OpenTelemetry) — AegisCloud runs and reads
   from these, it does not reimplement them.
+- **Instrumenting the user's services.** Dependency discovery reads OpenTelemetry spans the
+  services already emit. AegisCloud does not inject tracing agents; uninstrumented services fall
+  back to manually declared edges, with reduced RCA confidence stated plainly.
+- **Autonomous action outside Kubernetes.** The platform scales, restarts and reschedules
+  workloads. It does not modify cloud infrastructure, DNS, load balancers or databases.
+- **RCA on signals it cannot see.** A cause outside the observed graph and telemetry (a bad
+  third-party API, a corrupted record) will be reported as *undiagnosed*, never guessed at.
 
 ## 5. Personas
 
 | Persona | Needs |
 |---|---|
-| **SRE / Platform Engineer** | Define SLOs, see burn-rate, run chaos evaluations, compare providers |
-| **Engineering Manager** | High-level reliability scorecards per service/team, trend over time |
-| **Developer (service owner)** | See why their service's score dropped, what probe/SLO failed |
-| **Admin** | Manage users, providers, integrations, retention policy |
+| **SRE / Platform Engineer** | Define SLOs, see burn-rate, run chaos experiments, set autonomy levels, get a root cause instead of an alert storm |
+| **Engineering Manager** | Reliability scorecards per service/team, trend over time, cost-saving recommendations with their reliability impact stated |
+| **Developer (service owner)** | See why *their* service degraded — and whether the cause was actually a dependency they do not own |
+| **On-call responder** | One diagnosed incident with a ranked cause and blast radius, not forty correlated pages |
+| **Admin** | Manage users, clusters, integrations, retention, and how autonomous the platform is allowed to be |
 
 ## 6. Functional Requirements
 
@@ -103,55 +131,122 @@ terminology, and can't produce an apples-to-apples comparison.
   EKS us-east-1 vs GCP GKE us-central1) side by side.
 - FR-21: System produces a historical trend (score over time) per target and per service.
 
-### 6.8 Alerting
-- FR-22: System raises an **alert** when SLO burn-rate exceeds a configurable threshold.
-- FR-23: Alerts have a lifecycle: `OPEN → ACKNOWLEDGED → RESOLVED`.
+### 6.8 Dependency & Failure Propagation Analysis
+- FR-22: System builds a **service dependency graph** — directed edges `A → B` meaning "A calls
+  B" — discovered from OpenTelemetry trace spans, with manual declaration as a fallback for
+  services that are not yet instrumented.
+- FR-23: Each edge carries observed **call rate, error rate and latency**, so a weak dependency
+  is visible before it fails.
+- FR-24: System computes the **blast radius** of any service: the transitive set of upstream
+  services that would be affected if it degraded, ranked by dependency strength.
+- FR-25: System identifies **critical path** and **single points of failure** — services whose
+  failure reaches a disproportionate share of the graph.
+- FR-26: When multiple targets degrade together, the system correlates them against the graph to
+  distinguish **propagated symptoms from the originating failure**.
 
-### 6.9 Auditability
-- FR-24: All mutating actions (create/update/delete on services, clusters, targets, SLOs, policy
+### 6.9 Root Cause Analysis
+- FR-27: On an incident (SLO breach, alert storm, or failed experiment), the RCA engine produces
+  a **ranked list of candidate root causes**, each with a confidence score and the evidence
+  supporting it.
+- FR-28: RCA correlates across four signal classes: dependency-graph position (per 6.8), temporal
+  ordering (what degraded first), deployment/change events, and resource saturation.
+- FR-29: Every RCA verdict is **explainable** — it cites the specific metrics, spans, events and
+  graph edges it used. An unexplainable verdict is not shown.
+- FR-30: RCA output is retained per incident so its accuracy can be reviewed after the fact, and
+  a human can mark a verdict correct or incorrect.
+
+### 6.10 Optimization Recommendations
+- FR-31: System recommends **cost optimizations** — over-provisioned replicas, oversized resource
+  requests, workloads cheaper on a different registered provider — each with an estimated
+  monthly saving.
+- FR-32: System recommends **performance optimizations** — undersized resources causing
+  throttling, scaling strategies mismatched to the observed traffic shape.
+- FR-33: Every recommendation states its **reliability impact**, and a recommendation that would
+  breach an existing SLO is never surfaced as safe.
+- FR-34: A recommendation can be **applied** (subject to Policy Engine limits and RBAC) or
+  dismissed, and the outcome is recorded so bad advice is visible.
+
+### 6.11 Autonomy
+- FR-35: Each remediation type has an **autonomy level**: `OBSERVE` (record only), `SUGGEST`
+  (recommend to a human), or `ACT` (execute automatically within policy).
+- FR-36: Autonomy level is configurable per cluster and per action type, and defaults to
+  `SUGGEST` — the platform does not act unattended until explicitly permitted.
+- FR-37: Every autonomous action records what was observed, what was concluded, what was done,
+  and what happened next.
+- FR-38: An autonomous action that fails to improve the situation within a configurable window is
+  **rolled back** and escalated to a human.
+
+### 6.12 Alerting
+- FR-39: System raises an **alert** when SLO burn-rate exceeds a configurable threshold.
+- FR-40: Alerts have a lifecycle: `OPEN → ACKNOWLEDGED → RESOLVED`.
+- FR-41: Alerts caused by a diagnosed upstream failure are **grouped under that root cause**
+  rather than paging separately, to suppress alert storms.
+
+### 6.13 Auditability
+- FR-42: All mutating actions (create/update/delete on services, clusters, targets, SLOs, policy
   config) are written to an **audit log** with actor, timestamp, before/after state.
+- FR-43: Autonomous actions are audited identically to human ones, with the actor recorded as the
+  engine that took them.
 
-### 6.10 Access Control
-- FR-25: Roles: `ADMIN` (manage everything), `OPERATOR` (deploy, run evaluations/experiments,
-  edit SLOs), `VIEWER` (read-only).
-- FR-26: Authentication via JWT; all API endpoints except login/health require a valid token.
+### 6.14 Access Control
+- FR-44: Roles: `ADMIN` (manage everything, set autonomy levels), `OPERATOR` (deploy, run
+  evaluations/experiments, edit SLOs, apply recommendations), `VIEWER` (read-only).
+- FR-45: Authentication via JWT; all API endpoints except login/health require a valid token.
 
 ## 7. Non-Functional Requirements
 
 | Category | Requirement |
 |---|---|
-| **Portability** | Core domain/services must not import any cloud provider SDK. Provider-specific code is isolated behind an `Adapter` interface. |
-| **Availability** | Platform itself should target 99.5% uptime (it is also a service being evaluated, per its own model — "dogfooding"). |
-| **Performance** | Probe scheduling must support at least 500 concurrent endpoint checks without blocking the API. |
-| **Data retention** | Raw metric samples retained 30 days by default (configurable); aggregated hourly rollups retained 13 months. |
-| **Security** | Secrets (provider credentials, webhook URLs) encrypted at rest. All traffic over TLS. |
-| **Extensibility** | Adding a new cloud provider = implementing one adapter interface, no schema migration required. |
-| **Observability** | The platform emits its own OpenTelemetry traces/metrics (dogfooding again). |
+| **Portability** | No engine may import a cloud provider SDK. Clusters are reached only through `client-go`. |
+| **Availability** | Platform itself targets 99.5% uptime (it is also a service under its own model — "dogfooding"). |
+| **Performance** | Probe scheduling supports ≥500 concurrent endpoint checks without blocking the API. |
+| **Data retention** | Raw metric samples 30 days (configurable); aggregated rollups 13 months; incidents and RCA verdicts 13 months. |
+| **Security** | Secrets (kubeconfigs, webhook URLs) encrypted at rest. All traffic over TLS. |
+| **Extensibility** | A new provider is a new kubeconfig and a label — no schema migration, no engine change. |
+| **Observability** | The platform emits its own OpenTelemetry traces/metrics. |
+| **Explainability** | No RCA verdict, score or recommendation may be shown without the evidence behind it. A number the user cannot interrogate is a liability, not a feature. |
+| **Safety** | Autonomy defaults to `SUGGEST`. Every autonomous action is policy-checked, reversible, audited, and rolled back if it does not help. |
+| **Graph scale** | Dependency graph analysis handles ≥200 services and ≥1000 edges within interactive latency. |
 
 ## 8. Success Metrics (for the platform itself)
 
 - Time to onboard a new service + first SLO: < 5 minutes.
-- A new cloud provider adapter can be added without touching `core` or `database` modules.
-- Reliability score recomputation for a target with 30 days of samples completes in < 2s.
+- A new cluster on any provider is registered without a code change.
+- Reliability score recomputation for a target with 30 days of samples: < 2s.
+- Blast-radius computation on a 200-service graph: < 500ms.
+- **RCA precision@1 ≥ 70% on injected faults** — measured by running known chaos experiments and
+  checking whether the engine's top-ranked cause is the fault that was actually injected. This is
+  the platform's central honesty check: chaos experiments provide ground truth that ordinary
+  production incidents never do.
+- Zero autonomous actions taken outside policy limits.
 
 ## 9. Constraints & Assumptions
 
-- Phase 1 assumes a single-tenant deployment (multi-org support deferred to a later phase; the
-  schema reserves an `org_id` column so it isn't a breaking change later).
-- Initial probe types are limited to HTTP/HTTPS/TCP/gRPC — no browser-based synthetic (Selenium)
-  checks in MVP.
-- Chaos evaluation execution (Phase 1 only *defines* the model) assumes probes are the mechanism
-  to observe impact; actual fault injection tooling (e.g. Toxiproxy-style) is a Phase 3+ concern.
+- Phase 1 assumes a single-tenant deployment (multi-org deferred; schema reserves `org_id`).
+- Probe types limited to HTTP/HTTPS/TCP/gRPC — no browser-based synthetic checks in MVP.
+- **Dependency discovery requires trace instrumentation.** Services emitting OpenTelemetry spans
+  are discovered automatically; the rest must be declared manually, and RCA confidence is reduced
+  and labelled accordingly for those.
+- **RCA quality is bounded by graph completeness.** An incomplete graph yields lower-confidence
+  verdicts, and the engine reports that rather than compensating with a guess.
+- Cost optimization uses published provider list pricing, not the user's negotiated rates, so
+  savings estimates are directional. This is stated wherever a figure is shown.
 
-## 10. Phase Roadmap (for context)
+## 10. Phase Roadmap
 
 | Phase | Name | Deliverable |
 |---|---|---|
 | **1** | Architecture | Requirements, architecture, database, APIs (this document set) |
-| 2 | Platform Foundation | Go backend, React frontend, authentication, Docker, local Kubernetes (kind) |
-| 3 | Deployment Engine | Manifest rendering + apply via client-go, cluster registration |
-| 4 | Control Plane | Auto-Scaling, Self-Healing, Policy Engine, reconcile loop |
-| 5 | Evaluation Engine | Probe scheduler, Prometheus/Loki/OTel ingestion, SLO + score computation |
-| 6 | Experiment Engine | Chaos/fault-injection runs, before/during/after capture |
-| 7 | Dashboard & Alerting | Full React dashboard, SSE streaming, burn-rate alerts |
-| 8 | Multi-Cloud & Hardening | Real EKS/AKS/GKE clusters, multi-tenant readiness, prod deployment |
+| **2** | Platform Foundation | Go backend, React dashboard, JWT auth, Docker, local kind cluster, failable sample workloads |
+| 3 | Deployment Engine | Cluster registration, manifest rendering + apply via client-go, PostgreSQL persistence |
+| 4 | Control Plane | Auto-Scaling, Self-Healing, Policy Engine, reconcile loop, autonomy levels |
+| 5 | Evaluation Engine | Probe scheduler, Prometheus/Loki/OTel ingestion, SLO + error budget + score |
+| 6 | Experiment Engine | Chaos/fault-injection runs with before/during/after capture — also the ground truth for measuring RCA |
+| 7 | Dependency & Propagation | Service graph from trace spans, blast radius, critical path, SPOF detection |
+| 8 | Root Cause Analysis | Multi-signal correlation, ranked explainable verdicts, alert grouping by cause |
+| 9 | Optimization Advisor | Cost and performance recommendations with reliability impact and apply/dismiss tracking |
+| 10 | Multi-Cloud & Hardening | Real EKS/AKS/GKE clusters, multi-tenant readiness, production deployment |
+
+Phases 7 and 8 are deliberately late: a dependency graph needs real telemetry flowing (Phase 5)
+and RCA needs the chaos engine (Phase 6) to supply ground truth for measuring whether its
+verdicts are actually correct.

@@ -1,10 +1,23 @@
 # AegisCloud
 
-A cloud-agnostic reliability platform: deploy services onto Kubernetes clusters on any provider,
-control them there (auto-scaling, self-healing, policy guardrails), and evaluate them (SLOs,
-synthetic probes, chaos experiments) — producing comparable reliability scorecards across
-providers, regions, and architectures. Every engine talks to clusters only through the standard
-Kubernetes API, so AWS EKS, Azure AKS, and GCP GKE are interchangeable targets, not special cases.
+**A cloud-agnostic autonomous reliability platform for microservice applications.** It
+continuously monitors distributed systems, performs controlled failure experiments, automatically
+scales and heals services, analyzes service dependencies and failure propagation, performs
+intelligent root-cause analysis, evaluates application resilience, and recommends cost and
+performance optimizations across heterogeneous cloud environments.
+
+Two words carry the design weight:
+
+- **Autonomous** — the platform closes the loop itself: observe → diagnose → decide → act →
+  verify, rolling back and escalating when an action does not help. Autonomy is a per-action,
+  per-cluster setting that defaults to *suggest only*.
+- **Microservice applications** — the unit of analysis is a *dependency graph*, not one isolated
+  workload. That is what makes failure-propagation and root-cause analysis possible: a checkout
+  failure caused by an auth timeout is only diagnosable if the platform knows checkout calls auth.
+
+Cloud-agnosticism is structural, not aspirational: every engine reaches clusters only through the
+standard Kubernetes API, so AWS EKS, Azure AKS, GCP GKE and a local kind cluster are
+interchangeable targets rather than special cases.
 
 Being built phase by phase. See [docs/phase-1-architecture](docs/phase-1-architecture) for the
 foundational design.
@@ -14,13 +27,19 @@ foundational design.
 | Phase | Status |
 |---|---|
 | 1 — Architecture (requirements, architecture, database, APIs) | ✅ done |
-| 2 — Platform Foundation (Go backend, React frontend, auth, Docker, local K8s) | ✅ done |
-| 3 — Deployment Engine | planned |
-| 4 — Control Plane (Auto-Scaling, Self-Healing, Policy Engine) | planned |
-| 5 — Evaluation Engine | planned |
-| 6 — Experiment Engine (chaos) | planned |
-| 7 — Dashboard & Alerting | planned |
-| 8 — Multi-Cloud & Hardening | planned |
+| 2 — Platform Foundation (Go backend, React dashboard, auth, Docker, kind, sample workloads) | ✅ done |
+| 3 — Deployment Engine (client-go, cluster registration, PostgreSQL) | ⏳ next |
+| 4 — Control Plane (Auto-Scaling, Self-Healing, Policy Engine, autonomy levels) | planned |
+| 5 — Evaluation Engine (probes, telemetry ingestion, SLOs, scoring) | planned |
+| 6 — Experiment Engine (chaos — also the ground truth for measuring RCA) | planned |
+| 7 — Dependency & Propagation (service graph, blast radius, SPOF) | planned |
+| 8 — Root Cause Analysis (multi-signal correlation, explainable verdicts) | planned |
+| 9 — Optimization Advisor (cost + performance recommendations) | planned |
+| 10 — Multi-Cloud & Hardening (real EKS/AKS/GKE, multi-tenancy, production) | planned |
+
+Phases 7 and 8 are deliberately late: a dependency graph needs real telemetry flowing (Phase 5),
+and RCA needs the chaos engine (Phase 6) to supply incidents whose true cause is known in advance
+— otherwise there is no way to measure whether its verdicts are correct.
 
 ## Phase 1 Contents
 

@@ -20,19 +20,29 @@
  organization ──< app_user
       │
       ├──< cluster ──< policy
-      │      │
+      │      └──< autonomy_setting
+      │
       ├──< service ──< deployment_target >── cluster
-      │                       │
-      │                       ├──< endpoint ──< metric_sample
-      │                       ├──< scaling_event
-      │                       ├──< healing_event
-      │                       ├──< slo ──< error_budget_snapshot
-      │                       ├──< evaluation_run ──< evaluation_run_metric
-      │                       ├──< reliability_score_snapshot
-      │                       └──< alert
+      │      │                │
+      │      │                ├──< endpoint ──< metric_sample
+      │      │                ├──< scaling_event
+      │      │                ├──< healing_event
+      │      │                ├──< slo ──< error_budget_snapshot
+      │      │                ├──< evaluation_run ──< evaluation_run_metric
+      │      │                ├──< reliability_score_snapshot
+      │      │                ├──< recommendation
+      │      │                └──< alert >── incident
+      │      │
+      │      └──< service_dependency >── service      (caller → callee edges)
+      │
+      ├──< incident ──< rca_verdict
+      │      └──< autonomous_action
       │
       └──< audit_log_entry
 ```
+
+`service_dependency` is the only self-referential relation — both ends point at `service`, which
+is what makes the graph a graph.
 
 ## 3. Table Definitions
 
@@ -258,6 +268,112 @@ Indexes: `(target_id, window_end DESC)` for trend queries and cross-target compa
 | after_state | JSONB | nullable |
 | created_at | TIMESTAMPTZ | |
 
+### `service_dependency`
+A directed edge in the dependency graph: `caller` calls `callee`. Discovered from OpenTelemetry
+spans, or declared manually for uninstrumented services.
+
+| Column | Type | Notes |
+|---|---|---|
+| id | UUID PK | |
+| caller_service_id | UUID FK → service | |
+| callee_service_id | UUID FK → service | |
+| discovery_source | VARCHAR(20) | `TRACE` \| `MANUAL` — drives RCA confidence weighting |
+| call_rate_per_min | DOUBLE PRECISION | observed |
+| error_rate_pct | DOUBLE PRECISION | observed on this edge |
+| latency_p95_ms | DOUBLE PRECISION | observed on this edge |
+| last_seen_at | TIMESTAMPTZ | edges not seen recently are aged out |
+| created_at | TIMESTAMPTZ | |
+
+Unique constraint: `(caller_service_id, callee_service_id)`
+Indexes: `(callee_service_id)` — the hot path for "who depends on this?" blast-radius queries.
+
+### `incident`
+Groups correlated alerts under a single diagnosed event, so an alert storm becomes one incident.
+
+| Column | Type | Notes |
+|---|---|---|
+| id | UUID PK | |
+| org_id | UUID FK → organization | |
+| title | VARCHAR(255) | |
+| status | VARCHAR(20) | `OPEN` \| `DIAGNOSING` \| `MITIGATING` \| `RESOLVED` |
+| root_cause_target_id | UUID FK → deployment_target | nullable — null while undiagnosed |
+| confidence | DOUBLE PRECISION | 0–1, null when undiagnosed |
+| blast_radius_count | INT | number of affected downstream targets |
+| started_at | TIMESTAMPTZ | |
+| resolved_at | TIMESTAMPTZ | nullable |
+
+### `rca_verdict`
+One ranked candidate cause. An incident has several; the highest-confidence one is the verdict.
+Retained so accuracy can be reviewed after the fact.
+
+| Column | Type | Notes |
+|---|---|---|
+| id | UUID PK | |
+| incident_id | UUID FK → incident | |
+| candidate_target_id | UUID FK → deployment_target | |
+| rank | INT | 1 = most likely |
+| confidence | DOUBLE PRECISION | 0–1 |
+| reasoning | TEXT | human-readable explanation |
+| evidence | JSONB | the signals used — trace edges, timestamps, deployment ids, metrics (FR-29) |
+| signal_scores | JSONB | per-signal contribution: graph position, temporal order, change events, saturation |
+| human_verdict | VARCHAR(20) | nullable — `CORRECT` \| `INCORRECT`, for measuring precision@1 |
+| created_at | TIMESTAMPTZ | |
+
+Indexes: `(incident_id, rank)`
+
+### `recommendation`
+Output of the Optimization Advisor.
+
+| Column | Type | Notes |
+|---|---|---|
+| id | UUID PK | |
+| target_id | UUID FK → deployment_target | |
+| kind | VARCHAR(30) | `RIGHTSIZE_CPU` \| `RIGHTSIZE_MEMORY` \| `REDUCE_REPLICAS` \| `CHANGE_STRATEGY` \| `MIGRATE_PROVIDER` |
+| title | VARCHAR(255) | |
+| rationale | TEXT | why this is being suggested |
+| evidence | JSONB | utilisation samples backing it |
+| estimated_monthly_saving_usd | DOUBLE PRECISION | directional — list pricing, not negotiated rates |
+| reliability_impact | VARCHAR(20) | `NONE` \| `LOW` \| `MEDIUM` \| `HIGH` (FR-33) |
+| status | VARCHAR(20) | `OPEN` \| `APPLIED` \| `DISMISSED` \| `REVERTED` |
+| applied_by | UUID FK → app_user | nullable |
+| applied_at | TIMESTAMPTZ | nullable |
+| outcome | TEXT | nullable — what actually happened, so bad advice is visible (FR-34) |
+| created_at | TIMESTAMPTZ | |
+
+### `autonomy_setting`
+Per-cluster, per-action autonomy level. Defaults to `SUGGEST` (FR-36).
+
+| Column | Type | Notes |
+|---|---|---|
+| id | UUID PK | |
+| cluster_id | UUID FK → cluster | nullable — null means org-wide default |
+| action_type | VARCHAR(30) | `SCALE_UP` \| `SCALE_DOWN` \| `RESTART_POD` \| `RESCHEDULE_POD` \| `APPLY_RECOMMENDATION` |
+| level | VARCHAR(10) | `OBSERVE` \| `SUGGEST` \| `ACT` |
+| updated_by | UUID FK → app_user | |
+| updated_at | TIMESTAMPTZ | |
+
+Unique constraint: `(cluster_id, action_type)`
+
+### `autonomous_action`
+The record every autonomous action leaves (FR-37), including whether it worked and whether it was
+rolled back (FR-38).
+
+| Column | Type | Notes |
+|---|---|---|
+| id | UUID PK | |
+| incident_id | UUID FK → incident | nullable |
+| target_id | UUID FK → deployment_target | |
+| action_type | VARCHAR(30) | |
+| observed | JSONB | what the platform saw |
+| concluded | TEXT | what it decided, and why |
+| executed | JSONB | what it actually did |
+| policy_check | VARCHAR(20) | `PASSED` \| `REJECTED` |
+| outcome | VARCHAR(20) | `PENDING` \| `IMPROVED` \| `NO_CHANGE` \| `WORSENED` \| `ROLLED_BACK` |
+| score_before | DOUBLE PRECISION | |
+| score_after | DOUBLE PRECISION | nullable until the verification window closes |
+| executed_at | TIMESTAMPTZ | |
+| verified_at | TIMESTAMPTZ | nullable |
+
 ## 4. Retention Strategy
 
 - `metric_sample`: raw rows purged after 30 days (configurable); a nightly job rolls hourly
@@ -265,6 +381,12 @@ Indexes: `(target_id, window_end DESC)` for trend queries and cross-target compa
   survives indefinitely at reduced resolution.
 - `audit_log_entry`: retained indefinitely (compliance).
 - `evaluation_run` + `evaluation_run_metric`: retained 13 months.
+- `incident` + `rca_verdict`: retained 13 months. These are never purged early — they are the
+  dataset the RCA precision@1 metric is computed from, so discarding them would remove the
+  platform's only evidence that its diagnoses are any good.
+- `autonomous_action`: retained 13 months, for the same reason.
+- `service_dependency`: edges unseen for 14 days are aged out, so a removed call path does not
+  linger in the graph and skew blast-radius calculations.
 
 ## 5. Migration Convention
 
