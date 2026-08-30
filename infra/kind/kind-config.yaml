@@ -1,0 +1,9 @@
+# Local Kubernetes target for AegisCloud dev.
+# Create with: kind create cluster --config infra/kind/kind-config.yaml
+# This cluster is registered in AegisCloud exactly like a real EKS/AKS/GKE cluster —
+# see docs/phase-1-architecture/03-database.md `cluster` table (provider_type = KIND).
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: aegiscloud-local
+nodes:
+  - role: control-plane
