@@ -36,6 +36,7 @@ func NewRouter() http.Handler {
 	authHandlers := &AuthHandlers{Store: userStore, Tokens: tokenManager}
 	platform := &PlatformHandlers{Store: store.New()}
 
+	r.Get("/", IndexHandler)
 	r.Get("/healthz", HealthHandler)
 
 	r.Route("/api/v1", func(v1 chi.Router) {
