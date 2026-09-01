@@ -80,9 +80,18 @@ public final class SelfHealingEngine {
                             + "); the spec or a referenced secret is wrong"));
         }
 
-        if (reason.equals("CrashLoopBackOff")) {
+        // CrashLoopBackOff is only what a crashing pod reports while it waits for its
+        // next attempt. Between attempts the same pod reports the termination reason
+        // instead - "Error", or a startup failure - and a classifier that recognises
+        // only the waiting state sees a broken pod as healthy for part of every
+        // cycle. The watch already wakes on a non-zero exit, so recognising only
+        // CrashLoopBackOff here left the two halves disagreeing about what broken
+        // means, and nothing was ever healed.
+        if (reason.equals("CrashLoopBackOff") || reason.equals("Error")
+                || reason.equals("StartError") || reason.equals("ContainerCannotRun")) {
             return java.util.Optional.of(escalateIfPersistent(pod, Failure.CRASH_LOOP,
-                    "pod is crash-looping after " + pod.restarts() + " restarts"));
+                    "pod has failed " + pod.restarts() + " time(s) and is not running ("
+                            + reason + ")"));
         }
 
         if (reason.equals("OOMKilled")) {

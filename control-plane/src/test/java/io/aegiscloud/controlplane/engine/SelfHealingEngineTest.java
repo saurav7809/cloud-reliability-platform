@@ -38,6 +38,25 @@ class SelfHealingEngineTest {
     }
 
     @Test
+    @DisplayName("a pod between crash restarts is diagnosed, not only one in CrashLoopBackOff")
+    void terminatedWithErrorIsAlsoACrash() {
+        // CrashLoopBackOff is only what a crashing pod reports while it waits for its
+        // next attempt; between attempts it reports the termination reason instead. A
+        // classifier recognising only the waiting state sees the same broken pod as
+        // healthy for part of every cycle, and the watch that wakes on a non-zero exit
+        // then finds nothing to do.
+        for (String reason : List.of("Error", "StartError", "ContainerCannotRun")) {
+            List<SelfHealingEngine.Diagnosis> found =
+                    SelfHealingEngine.diagnose(List.of(pod("web-1", false, 2, reason)));
+
+            assertThat(found).singleElement().satisfies(d -> {
+                assertThat(d.failure()).isEqualTo(SelfHealingEngine.Failure.CRASH_LOOP);
+                assertThat(d.action()).isEqualTo(ActionType.RESTART_POD);
+            });
+        }
+    }
+
+    @Test
     @DisplayName("a crash loop that has survived repeated replacement is escalated instead")
     void persistentCrashLoopIsEscalated() {
         List<SelfHealingEngine.Diagnosis> found =

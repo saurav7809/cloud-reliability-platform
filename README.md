@@ -184,6 +184,50 @@ Six screens over the platform API, styled as a dark operator console:
 
 ## Verified So Far
 
+### The end-to-end story, run in one sitting
+
+Deploy from an image, monitor it, detect load, scale it, detect failure, recover it,
+measure reliability, diagnose a problem. In that order, on the live fleet:
+
+```
+1  DEPLOYED    5 microservices, image built by the platform, part of one application
+
+2  HIGH LOAD   a load generator pod drives real traffic into payments
+               kubectl top: payments 7220m CPU against a 100m request
+
+3  SCALED      "CPU at 7260.3% of request, above the 75% ceiling; sizing for 60%
+                needs 8 replicas"                       -> payments 1 -> 8, applied
+
+4  FAILURE     a pod crashed from inside the workload, repeatedly
+
+5  RECOVERED   watch fired in seconds; payments | CRASH_LOOP | RESTARTED
+
+6  MEASURED    catalog 100.0 / 48.7ms   orders 100.0 / 26.2ms   payments 100.0 / 29.1ms
+
+7  DIAGNOSED   catalog made to fail every request; four services degraded:
+               #1 catalog     LIKELY_CAUSE     0.70
+               #2 shipping    POSSIBLE_CAUSE   0.36
+               #3 orders      LIKELY_SYMPTOM   0.27
+               #4 storefront  LIKELY_SYMPTOM   0.27
+```
+
+**A bug this run exposed.** Step 5 did nothing the first time. The watch fired four
+times and no healing happened, because the watch treats a container that exited
+non-zero as unhealthy while the classifier recognised only `CrashLoopBackOff` — the
+state a crashing pod reports *while waiting* for its next attempt. Between attempts
+the same pod reports its termination reason instead, so for part of every cycle the
+two halves of the platform disagreed about what "broken" meant and nothing was ever
+healed. `Error`, `StartError` and `ContainerCannotRun` are now classified as crashes,
+with a test for each.
+
+**A configuration lesson, not a bug.** Step 7 first returned "no service is below the
+degradation threshold" under the default 60-minute score window: a minute of total
+failure barely moves an hour of history. The window governs how quickly an incident
+becomes visible, which is why it is configuration and why detection and error budgets
+use different ones.
+
+
+
 ### The fleet: five microservices, registered from a Docker image
 
 Everything the platform manages is now a container image it registered, deployed and
