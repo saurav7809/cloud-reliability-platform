@@ -1,12 +1,15 @@
 import type { HealingEvent, ScalingEvent } from "../api/client";
 import { Card, Badge, StatusBadge, timeAgo } from "../components/ui";
+import { LiveActivity } from "../components/LiveActivity";
 
 export function ControlPlanePage({
   scaling,
   healing,
+  token,
 }: {
   scaling: ScalingEvent[];
   healing: HealingEvent[];
+  token: string;
 }) {
   return (
     <>
@@ -17,6 +20,8 @@ export function ControlPlanePage({
           Engine's guardrails first.
         </p>
       </div>
+
+      <LiveActivity token={token} />
 
       <Card title="Auto-Scaling Decisions" meta={`${scaling.length} events`}>
         <div className="table-wrap">

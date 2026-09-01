@@ -211,3 +211,78 @@ export const resolveAlert = (t: string, id: string) =>
   authed<{ id: string; status: string }>(`/api/v1/alerts/${id}/resolve`, t, {
     method: "POST",
   });
+
+/* ------------------------------ live activity ------------------------------ */
+
+/** One line of control-loop activity, as it arrives over the event stream. */
+export interface LiveEvent {
+  kind:
+    | "connected"
+    | "cycle-started"
+    | "cycle-finished"
+    | "decision"
+    | "scaling"
+    | "healing"
+    | "outcome";
+  at: string;
+  text: string;
+}
+
+const LIVE_EVENTS = [
+  "connected",
+  "cycle-started",
+  "cycle-finished",
+  "decision",
+  "scaling",
+  "healing",
+  "outcome",
+] as const;
+
+/** Renders one raw stream payload as the sentence the operator reads. */
+function describe(kind: LiveEvent["kind"], data: Record<string, unknown>): string {
+  switch (kind) {
+    case "connected":
+      return "connected to the control plane";
+    case "cycle-started":
+      return "reconciliation cycle started";
+    case "cycle-finished":
+      return `cycle finished: ${data.targetsExamined} examined, ${data.actionsApplied} applied, ${data.actionsSuggested} suggested, ${data.actionsRejected} rejected`;
+    case "decision":
+      return `${data.target} — ${data.decision}`;
+    case "scaling":
+      return `${data.target} scaled ${data.from} to ${data.to} on ${data.trigger}`;
+    case "healing":
+      return `${data.target} — ${data.action} ${data.pod} (${data.failure})`;
+    case "outcome":
+      return `${data.target} — ${data.actionType} verified: ${data.outcome} (${data.scoreBefore}% to ${data.scoreAfter}% ready)`;
+  }
+}
+
+/**
+ * Subscribes to the control plane's live event stream.
+ *
+ * <p>EventSource cannot send an Authorization header, so the token goes in the query
+ * string — the one route on the API that accepts it that way. The browser reconnects
+ * on its own if the connection drops, which is why nothing here retries.
+ */
+export function openControlPlaneStream(
+  token: string,
+  onEvent: (event: LiveEvent) => void,
+): EventSource {
+  const source = new EventSource(
+    `${API_URL}/api/v1/control-plane/stream?token=${encodeURIComponent(token)}`,
+  );
+
+  for (const kind of LIVE_EVENTS) {
+    source.addEventListener(kind, (message) => {
+      const data = JSON.parse((message as MessageEvent).data) as Record<string, unknown>;
+      onEvent({
+        kind,
+        at: typeof data.at === "string" ? data.at : new Date().toISOString(),
+        text: describe(kind, data),
+      });
+    });
+  }
+
+  return source;
+}

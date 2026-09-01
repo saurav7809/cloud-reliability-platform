@@ -594,3 +594,32 @@ tbody tr:hover td {
   display: flex;
   gap: 6px;
 }
+
+/* Live control-loop feed. Newest first, fixed height so the page does not jump
+   as lines arrive. */
+.live-feed {
+  max-height: 260px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.live-line {
+  display: grid;
+  grid-template-columns: 78px 110px 1fr;
+  gap: 10px;
+  align-items: center;
+  font-size: 13px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--line, rgba(255, 255, 255, 0.06));
+}
+
+.live-time {
+  color: var(--muted, #8a93a6);
+  font-size: 12px;
+}
+
+.live-text {
+  overflow-wrap: anywhere;
+}

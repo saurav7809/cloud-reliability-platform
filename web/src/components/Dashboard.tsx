@@ -168,7 +168,7 @@ export function Dashboard({
               <ServicesPage services={data.services} targets={data.targets} />
             )}
             {tab === "control" && (
-              <ControlPlanePage scaling={data.scaling} healing={data.healing} />
+              <ControlPlanePage scaling={data.scaling} healing={data.healing} token={token} />
             )}
             {tab === "reliability" && (
               <ReliabilityPage slos={data.slos} experiments={data.experiments} />
