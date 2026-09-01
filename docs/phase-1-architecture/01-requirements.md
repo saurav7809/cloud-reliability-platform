@@ -357,7 +357,7 @@ after the fact. *Exercises:* FR-31→34.
 | Phase | Name | Deliverable |
 |---|---|---|
 | **1** | Architecture | Requirements, architecture, database, APIs (this document set) |
-| **2** | Platform Foundation | Go backend, React dashboard, JWT auth, Docker, local kind cluster, failable sample workloads |
+| **2** | Platform Foundation | Spring Boot control plane, React dashboard, JWT auth, Docker, local kind cluster, failable sample workloads |
 | 3 | Deployment Engine | Cluster registration, manifest rendering + apply via client-go, PostgreSQL persistence |
 | 4 | Control Plane | Auto-Scaling, Self-Healing, Policy Engine, reconcile loop, autonomy levels |
 | 5 | Evaluation Engine | Probe scheduler, Prometheus/Loki/OTel ingestion, SLO + error budget + score |

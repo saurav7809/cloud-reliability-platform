@@ -69,18 +69,17 @@ docs/phase-1-architecture/
 
 ```
 control-plane/  Spring Boot 3.5 / Java 17 control plane — REST API, JWT auth via Spring
-                Security, Flyway schema, and the Deployment Engine (fabric8). This is
-                the backend.
-backend/        The original Go implementation. Superseded by control-plane/ and kept
-                only as the reference the port was checked against; it is no longer
-                built by docker compose.
+                Security, Flyway schema, the Deployment Engine (fabric8) and the
+                autonomous control loop. This is the backend: Java throughout, with
+                Python reserved for the AI/ML service (prediction, anomaly detection,
+                AI-assisted RCA) where a model genuinely earns its place.
 web/        React + Vite + TypeScript operator dashboard
 workloads/  Deliberately failable sample service + manifests, so the platform has real
             pods to scale, heal and break (see workloads/README.md)
 infra/
   kind/     kind-config.yaml — local Kubernetes cluster definition
   k8s/      base manifests (namespace, etc.)
-docker-compose.yml   local dev: backend on :8080, frontend dev server on :5173
+docker-compose.yml   local dev: control plane on :8080, frontend dev server on :5173
 ```
 
 ## Running Locally

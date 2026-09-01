@@ -391,7 +391,7 @@ rolled back (FR-38).
 ## 5. Migration Convention
 
 - `golang-migrate`, one up/down pair per change: `{n}_{description}.up.sql` /
-  `{n}_{description}.down.sql` under `backend/db/migrations/`.
+  `V{n}__{description}.sql` under `control-plane/src/main/resources/db/migration/`.
 - No ORM auto-migration in any environment — schema changes only via migration files, so
   `0001_init.up.sql` created in Phase 2 is the literal source of truth for the tables above.
 - SQLite is used for local/dev/test (zero external dependency); PostgreSQL-specific types

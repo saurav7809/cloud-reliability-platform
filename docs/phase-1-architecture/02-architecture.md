@@ -221,7 +221,7 @@ Experiment runs follow the same loop, but the Experiment Engine first injects a 
 Control Plane, subject to Policy Engine blast-radius limits) and tags the Evaluation Engine's
 samples for that window as `BEFORE` / `DURING` / `AFTER`.
 
-## 6. Module Breakdown (Go backend)
+## 6. Module Breakdown (Spring Boot control plane)
 
 | Go module/package | Responsibility | Imports cloud/K8s SDKs? |
 |---|---|---|
