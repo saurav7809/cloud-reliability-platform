@@ -34,7 +34,7 @@ foundational design.
 | 6 — Experiment Engine (chaos, safety rules, steady-state hypothesis, always restores) | ✅ done |
 | 7 — Dependency & Propagation (service graph, blast radius, SPOF, critical path) | ✅ done |
 | 8 — Root Cause Analysis (multi-signal correlation, explainable verdicts, measured accuracy) | ✅ done |
-| 9 — Optimization Advisor (cost + performance recommendations) | planned |
+| 9 — Optimization Advisor (cost + performance advice that never trades reliability silently) | ✅ done |
 | 10 — Multi-Cloud & Hardening (real EKS/AKS/GKE, multi-tenancy, production) | planned |
 
 Phases 7 and 8 are deliberately late: a dependency graph needs real telemetry flowing (Phase 5),
@@ -147,6 +147,52 @@ Six screens over the platform API, styled as a dark operator console:
 > client-go. The dashboard says so on its Overview screen rather than implying live data.
 
 ## Verified So Far
+
+### Phase 9 — Optimization Advisor
+
+Cost and performance advice, with one rule above the rest (FR-33, UC-7): reliability
+is not currency. Observed against the running fleet:
+
+```
+auth-service      REPLICA_REDUCTION   safe=false   "Not safe to reduce replicas yet"
+catalog-service   SCALING_STRATEGY    safe=false   TREND scaling but no latency SLO
+checkout-service  OBSERVABILITY_GAP   safe=false   nothing is measuring it
+```
+
+**Withholding, not warning.** `auth-service` was genuinely over-provisioned at 0.6%
+CPU, and the advisor computed the saving — then declined to offer it, because the
+error budget was at 0% after the outages of the previous phases. Asking the API to
+apply it anyway is refused:
+
+> this recommendation is not offered as safe to apply: CPU sits at 0.6% of request
+> across 2 replicas... Withheld: only 0.0% of the error budget remains, so removing
+> capacity now would spend reliability the service cannot currently spare.
+
+There is no confirm-anyway path. A warning gets skimmed; an absent recommendation
+cannot be applied by accident. The saving is still stated in full, so nothing is
+hidden — it is simply not offered as a thing to do.
+
+**Applying is governed like any other write.** Three refusals stand between advice and
+a cluster: the advisor's own safety verdict, the recommendation still being open, and
+the same Policy Engine check the autonomous loop passes. An operator agreeing with a
+recommendation does not make it within policy.
+
+**Dismissals are kept.** `"reviewed: waiting for the error budget to recover first"`
+stays on the record against the recommendation, because FR-34 asks for bad advice to
+remain visible after someone acted on it.
+
+**Advice requires measurement.** No CPU reading, no resource recommendation — the
+advisor says nothing rather than inferring utilisation from a replica count. Targets
+nothing has probed get an `OBSERVABILITY_GAP` finding instead, which names their cost
+and tells the operator to register an endpoint.
+
+**Known limitation.** Estimated savings for the kind-cluster targets read $0.00
+because `monthly_cost_usd` is only populated for the seeded demo fleet; real cost data
+needs the OpenCost integration, which is not built. The arithmetic is exercised by
+tests with real figures ($400/4 replicas → $100 saving), but the live numbers are
+honest zeros rather than invented ones.
+
+
 
 ### Phase 8 — Root Cause Analysis
 

@@ -98,3 +98,10 @@ aegiscloud:
     degraded-below: ${AEGISCLOUD_RCA_DEGRADED_BELOW:80}
     # How far back RCA looks for the changes and the degradation onset it cites.
     lookback-minutes: ${AEGISCLOUD_RCA_LOOKBACK_MINUTES:30}
+
+  # The Optimization Advisor (Phase 9). Deliberately slow: advice that changes
+  # every minute is noise, and a recommendation seen yesterday should still be
+  # there today unless the facts behind it actually moved.
+  optimization:
+    interval-ms: ${AEGISCLOUD_OPTIMIZATION_INTERVAL_MS:3600000}
+    initial-delay-ms: ${AEGISCLOUD_OPTIMIZATION_INITIAL_DELAY_MS:45000}
