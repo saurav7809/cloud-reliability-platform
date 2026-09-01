@@ -105,3 +105,9 @@ aegiscloud:
   optimization:
     interval-ms: ${AEGISCLOUD_OPTIMIZATION_INTERVAL_MS:3600000}
     initial-delay-ms: ${AEGISCLOUD_OPTIMIZATION_INITIAL_DELAY_MS:45000}
+
+  # The Python AI service. Optional in the same sense Redis is: the platform runs
+  # without it and says so, rather than failing or pretending nothing is wrong.
+  ai:
+    base-url: ${AEGISCLOUD_AI_BASE_URL:http://localhost:8000}
+    timeout-ms: ${AEGISCLOUD_AI_TIMEOUT_MS:3000}

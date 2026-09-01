@@ -19,3 +19,8 @@ workloads/sample-service/sample-service
 
 # Maven
 control-plane/target/
+
+# Python
+ai-service/__pycache__/
+ai-service/**/__pycache__/
+ai-service/.pytest_cache/

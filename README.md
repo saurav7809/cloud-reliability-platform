@@ -68,6 +68,7 @@ docs/phase-1-architecture/
 ## Repo Layout
 
 ```
+ai-service/     Python 3 / FastAPI — anomaly detection, forecasting, RCA re-ranking
 control-plane/  Spring Boot 3.5 / Java 17 control plane — REST API, JWT auth via Spring
                 Security, Flyway schema, the Deployment Engine (fabric8) and the
                 autonomous control loop. This is the backend: Java throughout, with
@@ -147,6 +148,46 @@ Six screens over the platform API, styled as a dark operator console:
 > client-go. The dashboard says so on its Overview screen rather than implying live data.
 
 ## Verified So Far
+
+### Python AI Service
+
+Anomaly detection, forecasting and RCA re-ranking, running as a FastAPI sidecar the
+control plane treats as optional. Observed against the platform's own probe history:
+
+```
+anomalies   173 real latency samples, median 13ms
+            "366 is 54.1 robust deviations above the median of 13"
+
+forecast    against the target's own 250ms SLO
+            "level 12.9 with a +0.48 per-sample drift that is smaller than the
+             noise in the series; no breach estimate is meaningful"
+
+re-rank     auth-service  platform 0.657 -> adjusted 0.807  (+0.15, the cap)
+            "telemetry is 28.5 deviations from this service's own baseline, which
+             the platform's threshold comparison cannot see"
+```
+
+**No model, and the code says so.** MAD-based detection and Holt linear trend, chosen
+because a probe series is tens of points a minute apart — a neural model on that would
+need orders of magnitude more data and could not explain itself to an operator at three
+in the morning. `/health` names the methods in use so a verdict can always be traced to
+what produced it.
+
+**A flaw the tests caught.** The first forecaster reported "crosses 250ms in about 377
+samples" for a *flat, noisy* series: real arithmetic performed on jitter. It already
+knew its own confidence was low and wasn't acting on it. It now withholds the breach
+estimate entirely and says why.
+
+**The re-ranker cannot overrule topology.** Its adjustment is capped at 0.15 and halved
+for candidates the graph places downstream, so unusual telemetry can reorder candidates
+the platform found comparable but can never lift a symptom above its cause. It also
+cannot introduce a candidate, having no database to invent one from.
+
+**One bug found by running it.** Java's HttpClient defaults to HTTP/2 and opens with an
+h2c upgrade that uvicorn rejects, mangling the request into a 422 that reads exactly
+like a validation failure in a perfectly valid body. Pinned to HTTP/1.1.
+
+
 
 ### Phase 10 — Multi-Cloud & Hardening
 
