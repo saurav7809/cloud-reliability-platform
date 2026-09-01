@@ -1,402 +1,391 @@
-// Package store is AegisCloud's data layer.
+// Package store is AegisCloud's data access layer, backed by PostgreSQL.
 //
-// PHASE 2 NOTE: this is an in-memory store holding a seeded demo fleet so the
-// dashboard has a realistic platform to render. It is NOT reading from live
-// clusters — that arrives in Phase 3 with the client-go Deployment Engine, at
-// which point this package is backed by PostgreSQL using the schema in
-// docs/phase-1-architecture/03-database.md. The exported method set is written to
-// survive that swap unchanged.
+// The fleet it serves is seeded demo data (see internal/db/seed.go) rather than
+// live cluster state — that arrives in Phase 3 with the client-go Deployment
+// Engine. The persistence, queries and aggregation below are real; only the
+// origin of the rows is synthetic.
 package store
 
 import (
-	"fmt"
+	"context"
 	"math"
 	"math/rand"
-	"sort"
-	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/aegiscloud/backend/internal/cache"
 	"github.com/aegiscloud/backend/internal/domain"
 )
 
+const overviewCacheKey = "aegiscloud:overview:v1"
+
 type Store struct {
-	mu sync.RWMutex
-
-	clusters    []domain.Cluster
-	services    []domain.Service
-	targets     []domain.DeploymentTarget
-	slos        []domain.Slo
-	scaling     []domain.ScalingEvent
-	healing     []domain.HealingEvent
-	alerts      []domain.Alert
-	experiments []domain.ExperimentRun
-	policies    []domain.Policy
+	pool  *pgxpool.Pool
+	cache *cache.Cache
 }
 
-func New() *Store {
-	s := &Store{}
-	s.seed()
-	return s
+func New(pool *pgxpool.Pool, c *cache.Cache) *Store {
+	return &Store{pool: pool, cache: c}
 }
 
-func (s *Store) seed() {
-	now := time.Now().UTC()
-
-	s.clusters = []domain.Cluster{
-		{ID: "cl-kind-local", Name: "aegiscloud-local", Provider: domain.ProviderKind,
-			Distribution: "kind", Region: "local", Status: domain.ClusterHealthy,
-			NodeCount: 1, K8sVersion: "v1.37.0", IsLocal: true},
-		{ID: "cl-eks-use1", Name: "prod-eks-use1", Provider: domain.ProviderAWS,
-			Distribution: "EKS", Region: "us-east-1", Status: domain.ClusterHealthy,
-			NodeCount: 6, K8sVersion: "v1.30.2"},
-		{ID: "cl-gke-usc1", Name: "prod-gke-usc1", Provider: domain.ProviderGCP,
-			Distribution: "GKE", Region: "us-central1", Status: domain.ClusterHealthy,
-			NodeCount: 5, K8sVersion: "v1.30.1"},
-		{ID: "cl-aks-weu", Name: "prod-aks-weu", Provider: domain.ProviderAzure,
-			Distribution: "AKS", Region: "westeurope", Status: domain.ClusterDegraded,
-			NodeCount: 4, K8sVersion: "v1.29.7"},
+func (s *Store) Clusters(ctx context.Context) ([]domain.Cluster, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, name, provider_type, COALESCE(distribution,''), COALESCE(region,''),
+		       status, node_count, COALESCE(k8s_version,''), is_local
+		FROM cluster WHERE is_active ORDER BY is_local DESC, name`)
+	if err != nil {
+		return nil, err
 	}
+	defer rows.Close()
 
-	s.services = []domain.Service{
-		{ID: "svc-checkout", Name: "checkout-service", OwnerTeam: "payments",
-			Description: "Order checkout and payment capture",
-			Tags: map[string]string{"env": "prod", "tier": "critical"}},
-		{ID: "svc-catalog", Name: "catalog-service", OwnerTeam: "commerce",
-			Description: "Product catalog and search",
-			Tags: map[string]string{"env": "prod", "tier": "high"}},
-		{ID: "svc-auth", Name: "auth-service", OwnerTeam: "platform",
-			Description: "Identity, sessions and token issuance",
-			Tags: map[string]string{"env": "prod", "tier": "critical"}},
-	}
-
-	type targetSeed struct {
-		svcID, svcName, clID, clName, ns string
-		provider                         domain.ProviderType
-		region                           string
-		strategy                         domain.ScalingStrategy
-		status                           domain.DeploymentStatus
-		replicas, desired                int
-		score, avail, p95, errRate, cost float64
-	}
-
-	seeds := []targetSeed{
-		{"svc-checkout", "checkout-service", "cl-eks-use1", "prod-eks-use1", "checkout",
-			domain.ProviderAWS, "us-east-1", domain.StrategyCPU, domain.DeploymentHealthy,
-			6, 6, 96.4, 99.94, 182.4, 0.06, 1284.50},
-		{"svc-checkout", "checkout-service", "cl-gke-usc1", "prod-gke-usc1", "checkout",
-			domain.ProviderGCP, "us-central1", domain.StrategyLatency, domain.DeploymentHealthy,
-			5, 5, 91.2, 99.81, 241.7, 0.19, 1102.30},
-		{"svc-catalog", "catalog-service", "cl-eks-use1", "prod-eks-use1", "catalog",
-			domain.ProviderAWS, "us-east-1", domain.StrategyTrend, domain.DeploymentHealthy,
-			4, 4, 98.1, 99.98, 94.2, 0.02, 742.10},
-		{"svc-catalog", "catalog-service", "cl-aks-weu", "prod-aks-weu", "catalog",
-			domain.ProviderAzure, "westeurope", domain.StrategyCPU, domain.DeploymentDegraded,
-			3, 5, 78.6, 99.12, 512.9, 0.88, 689.40},
-		{"svc-auth", "auth-service", "cl-eks-use1", "prod-eks-use1", "auth",
-			domain.ProviderAWS, "us-east-1", domain.StrategyCPU, domain.DeploymentHealthy,
-			8, 8, 99.2, 99.99, 41.8, 0.01, 1620.00},
-		{"svc-auth", "auth-service", "cl-kind-local", "aegiscloud-local", "aegiscloud",
-			domain.ProviderKind, "local", domain.StrategyNone, domain.DeploymentHealthy,
-			1, 1, 94.0, 99.90, 12.4, 0.00, 0.00},
-	}
-
-	for i, t := range seeds {
-		s.targets = append(s.targets, domain.DeploymentTarget{
-			ID: fmt.Sprintf("tgt-%02d", i+1), ServiceID: t.svcID, ServiceName: t.svcName,
-			ClusterID: t.clID, ClusterName: t.clName, Provider: t.provider, Region: t.region,
-			Namespace: t.ns, ScalingStrategy: t.strategy, Status: t.status,
-			Replicas: t.replicas, DesiredReplicas: t.desired, ReliabilityScore: t.score,
-			AvailabilityPct: t.avail, LatencyP95Ms: t.p95, ErrorRatePct: t.errRate,
-			MonthlyCostUSD: t.cost,
-		})
-	}
-
-	s.slos = []domain.Slo{
-		{ID: "slo-1", TargetID: "tgt-01", TargetLabel: "checkout-service @ prod-eks-use1",
-			SliType: domain.SliAvailability, ObjectiveValue: 99.9, WindowDays: 30,
-			CurrentValue: 99.94, BudgetRemainingPct: 62.0, BurnRate: 0.7},
-		{ID: "slo-2", TargetID: "tgt-01", TargetLabel: "checkout-service @ prod-eks-use1",
-			SliType: domain.SliLatencyP95, ObjectiveValue: 250, WindowDays: 30,
-			CurrentValue: 182.4, BudgetRemainingPct: 81.0, BurnRate: 0.4},
-		{ID: "slo-3", TargetID: "tgt-02", TargetLabel: "checkout-service @ prod-gke-usc1",
-			SliType: domain.SliAvailability, ObjectiveValue: 99.9, WindowDays: 30,
-			CurrentValue: 99.81, BudgetRemainingPct: 18.0, BurnRate: 2.4},
-		{ID: "slo-4", TargetID: "tgt-04", TargetLabel: "catalog-service @ prod-aks-weu",
-			SliType: domain.SliAvailability, ObjectiveValue: 99.9, WindowDays: 30,
-			CurrentValue: 99.12, BudgetRemainingPct: 0.0, BurnRate: 8.9},
-		{ID: "slo-5", TargetID: "tgt-05", TargetLabel: "auth-service @ prod-eks-use1",
-			SliType: domain.SliAvailability, ObjectiveValue: 99.95, WindowDays: 30,
-			CurrentValue: 99.99, BudgetRemainingPct: 91.0, BurnRate: 0.2},
-	}
-
-	s.scaling = []domain.ScalingEvent{
-		{ID: "se-1", TargetID: "tgt-05", TargetLabel: "auth-service @ prod-eks-use1",
-			PreviousReplicas: 6, NewReplicas: 8, TriggerMetric: "CPU", TriggerValue: 81.4,
-			Strategy: domain.StrategyCPU, DecidedAt: now.Add(-4 * time.Minute)},
-		{ID: "se-2", TargetID: "tgt-02", TargetLabel: "checkout-service @ prod-gke-usc1",
-			PreviousReplicas: 4, NewReplicas: 5, TriggerMetric: "LATENCY_P95", TriggerValue: 268.2,
-			Strategy: domain.StrategyLatency, DecidedAt: now.Add(-17 * time.Minute)},
-		{ID: "se-3", TargetID: "tgt-03", TargetLabel: "catalog-service @ prod-eks-use1",
-			PreviousReplicas: 5, NewReplicas: 4, TriggerMetric: "TREND", TriggerValue: -12.6,
-			Strategy: domain.StrategyTrend, DecidedAt: now.Add(-41 * time.Minute)},
-		{ID: "se-4", TargetID: "tgt-01", TargetLabel: "checkout-service @ prod-eks-use1",
-			PreviousReplicas: 5, NewReplicas: 6, TriggerMetric: "CPU", TriggerValue: 76.9,
-			Strategy: domain.StrategyCPU, DecidedAt: now.Add(-68 * time.Minute)},
-	}
-
-	resolved := now.Add(-22 * time.Minute)
-	s.healing = []domain.HealingEvent{
-		{ID: "he-1", TargetID: "tgt-04", TargetLabel: "catalog-service @ prod-aks-weu",
-			PodName: "catalog-7d9f4b-x2mq", Reason: "CRASH_LOOP", ActionTaken: "RESTARTED",
-			DetectedAt: now.Add(-9 * time.Minute)},
-		{ID: "he-2", TargetID: "tgt-04", TargetLabel: "catalog-service @ prod-aks-weu",
-			PodName: "catalog-7d9f4b-k8tp", Reason: "OOM_KILLED", ActionTaken: "RESCHEDULED",
-			DetectedAt: now.Add(-25 * time.Minute), ResolvedAt: &resolved},
-		{ID: "he-3", TargetID: "tgt-02", TargetLabel: "checkout-service @ prod-gke-usc1",
-			PodName: "checkout-5c8a1e-vv4d", Reason: "NOT_READY", ActionTaken: "RESTARTED",
-			DetectedAt: now.Add(-53 * time.Minute), ResolvedAt: &resolved},
-	}
-
-	s.alerts = []domain.Alert{
-		{ID: "al-1", TargetID: "tgt-04", TargetLabel: "catalog-service @ prod-aks-weu",
-			Severity: domain.SeverityCritical, Status: domain.AlertOpen,
-			Message: "Error budget exhausted — burn rate 8.9x sustainable",
-			OpenedAt: now.Add(-9 * time.Minute)},
-		{ID: "al-2", TargetID: "tgt-02", TargetLabel: "checkout-service @ prod-gke-usc1",
-			Severity: domain.SeverityHigh, Status: domain.AlertOpen,
-			Message: "Availability SLO burn rate 2.4x — 18% budget remaining",
-			OpenedAt: now.Add(-31 * time.Minute)},
-		{ID: "al-3", TargetID: "tgt-04", TargetLabel: "catalog-service @ prod-aks-weu",
-			Severity: domain.SeverityMedium, Status: domain.AlertAcknowledged,
-			Message: "p95 latency 512.9ms exceeds 250ms objective",
-			OpenedAt: now.Add(-2 * time.Hour)},
-		{ID: "al-4", TargetID: "tgt-01", TargetLabel: "checkout-service @ prod-eks-use1",
-			Severity: domain.SeverityLow, Status: domain.AlertResolved,
-			Message: "Transient replica shortfall during rollout",
-			OpenedAt: now.Add(-6 * time.Hour)},
-	}
-
-	end1 := now.Add(-3 * time.Hour)
-	end2 := now.Add(-26 * time.Hour)
-	s.experiments = []domain.ExperimentRun{
-		{ID: "exp-1", ServiceName: "checkout-service", TargetLabel: "prod-eks-use1",
-			RunType: domain.RunChaos, FaultType: "LATENCY_INJECTION", Status: domain.RunCompleted,
-			ScoreBefore: 96.8, ScoreDuring: 71.2, ScoreAfter: 96.4,
-			StartedAt: now.Add(-3*time.Hour - 12*time.Minute), EndedAt: &end1},
-		{ID: "exp-2", ServiceName: "auth-service", TargetLabel: "prod-eks-use1",
-			RunType: domain.RunChaos, FaultType: "POD_KILL", Status: domain.RunCompleted,
-			ScoreBefore: 99.4, ScoreDuring: 88.1, ScoreAfter: 99.2,
-			StartedAt: now.Add(-26*time.Hour - 8*time.Minute), EndedAt: &end2},
-		{ID: "exp-3", ServiceName: "catalog-service", TargetLabel: "prod-aks-weu",
-			RunType: domain.RunChaos, FaultType: "RESOURCE_STARVATION", Status: domain.RunRejected,
-			StartedAt: now.Add(-45 * time.Minute)},
-		{ID: "exp-4", ServiceName: "catalog-service", TargetLabel: "prod-eks-use1",
-			RunType: domain.RunChaos, FaultType: "NETWORK_PARTITION", Status: domain.RunRunning,
-			ScoreBefore: 98.1, ScoreDuring: 82.4, StartedAt: now.Add(-6 * time.Minute)},
-	}
-
-	s.policies = []domain.Policy{
-		{ID: "pol-1", ClusterID: "cl-eks-use1", ClusterName: "prod-eks-use1",
-			MaxReplicas: 20, MaxConcurrentExperiments: 2,
-			ProtectedNamespaces: []string{"kube-system", "istio-system"}},
-		{ID: "pol-2", ClusterID: "cl-gke-usc1", ClusterName: "prod-gke-usc1",
-			MaxReplicas: 15, MaxConcurrentExperiments: 1,
-			ProtectedNamespaces: []string{"kube-system"}},
-		{ID: "pol-3", ClusterID: "cl-aks-weu", ClusterName: "prod-aks-weu",
-			MaxReplicas: 12, MaxConcurrentExperiments: 0,
-			ProtectedNamespaces: []string{"kube-system", "gatekeeper-system"}},
-		{ID: "pol-4", ClusterID: "cl-kind-local", ClusterName: "aegiscloud-local",
-			MaxReplicas: 3, MaxConcurrentExperiments: 1,
-			ProtectedNamespaces: []string{"kube-system", "local-path-storage"}},
-	}
-}
-
-func (s *Store) Clusters() []domain.Cluster {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return append([]domain.Cluster(nil), s.clusters...)
-}
-
-func (s *Store) Services() []domain.Service {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return append([]domain.Service(nil), s.services...)
-}
-
-func (s *Store) Targets() []domain.DeploymentTarget {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return append([]domain.DeploymentTarget(nil), s.targets...)
-}
-
-func (s *Store) Slos() []domain.Slo {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return append([]domain.Slo(nil), s.slos...)
-}
-
-func (s *Store) ScalingEvents() []domain.ScalingEvent {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := append([]domain.ScalingEvent(nil), s.scaling...)
-	sort.Slice(out, func(i, j int) bool { return out[i].DecidedAt.After(out[j].DecidedAt) })
-	return out
-}
-
-func (s *Store) HealingEvents() []domain.HealingEvent {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := append([]domain.HealingEvent(nil), s.healing...)
-	sort.Slice(out, func(i, j int) bool { return out[i].DetectedAt.After(out[j].DetectedAt) })
-	return out
-}
-
-func (s *Store) Alerts() []domain.Alert {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := append([]domain.Alert(nil), s.alerts...)
-	sort.Slice(out, func(i, j int) bool { return out[i].OpenedAt.After(out[j].OpenedAt) })
-	return out
-}
-
-func (s *Store) Experiments() []domain.ExperimentRun {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := append([]domain.ExperimentRun(nil), s.experiments...)
-	sort.Slice(out, func(i, j int) bool { return out[i].StartedAt.After(out[j].StartedAt) })
-	return out
-}
-
-func (s *Store) Policies() []domain.Policy {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return append([]domain.Policy(nil), s.policies...)
-}
-
-// SetAlertStatus transitions an alert through its OPEN -> ACKNOWLEDGED -> RESOLVED
-// lifecycle. Returns false if no alert with that id exists.
-func (s *Store) SetAlertStatus(id string, status domain.AlertStatus) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i := range s.alerts {
-		if s.alerts[i].ID == id {
-			s.alerts[i].Status = status
-			return true
+	out := []domain.Cluster{}
+	for rows.Next() {
+		var c domain.Cluster
+		if err := rows.Scan(&c.ID, &c.Name, &c.Provider, &c.Distribution, &c.Region,
+			&c.Status, &c.NodeCount, &c.K8sVersion, &c.IsLocal); err != nil {
+			return nil, err
 		}
+		out = append(out, c)
 	}
-	return false
+	return out, rows.Err()
 }
 
-func (s *Store) Overview() domain.Overview {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	ov := domain.Overview{
-		TotalClusters: len(s.clusters),
-		TotalServices: len(s.services),
-		TotalTargets:  len(s.targets),
+func (s *Store) Services(ctx context.Context) ([]domain.Service, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, name, COALESCE(owner_team,''), COALESCE(description,''), tags
+		FROM service ORDER BY name`)
+	if err != nil {
+		return nil, err
 	}
+	defer rows.Close()
 
-	for _, c := range s.clusters {
-		if c.Status == domain.ClusterHealthy {
-			ov.HealthyClusters++
+	out := []domain.Service{}
+	for rows.Next() {
+		var s2 domain.Service
+		if err := rows.Scan(&s2.ID, &s2.Name, &s2.OwnerTeam, &s2.Description, &s2.Tags); err != nil {
+			return nil, err
 		}
+		out = append(out, s2)
 	}
+	return out, rows.Err()
+}
 
-	type agg struct {
-		sum  float64
-		n    int
-		cost float64
+func (s *Store) Targets(ctx context.Context) ([]domain.DeploymentTarget, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT t.id, t.service_id, sv.name, t.cluster_id, c.name, c.provider_type,
+		       COALESCE(c.region,''), t.namespace, t.scaling_strategy, t.deployment_status,
+		       t.replicas, t.desired_replicas, t.reliability_score, t.availability_pct,
+		       t.latency_p95_ms, t.error_rate_pct, t.monthly_cost_usd
+		FROM deployment_target t
+		JOIN service sv ON sv.id = t.service_id
+		JOIN cluster c  ON c.id  = t.cluster_id
+		WHERE t.is_active
+		ORDER BY sv.name, c.name`)
+	if err != nil {
+		return nil, err
 	}
-	byProvider := map[domain.ProviderType]*agg{}
-	var scoreSum float64
+	defer rows.Close()
 
-	for _, t := range s.targets {
-		ov.TotalReplicas += t.Replicas
-		ov.MonthlyCostUSD += t.MonthlyCostUSD
-		scoreSum += t.ReliabilityScore
-		a, ok := byProvider[t.Provider]
-		if !ok {
-			a = &agg{}
-			byProvider[t.Provider] = a
+	out := []domain.DeploymentTarget{}
+	for rows.Next() {
+		var t domain.DeploymentTarget
+		if err := rows.Scan(&t.ID, &t.ServiceID, &t.ServiceName, &t.ClusterID, &t.ClusterName,
+			&t.Provider, &t.Region, &t.Namespace, &t.ScalingStrategy, &t.Status,
+			&t.Replicas, &t.DesiredReplicas, &t.ReliabilityScore, &t.AvailabilityPct,
+			&t.LatencyP95Ms, &t.ErrorRatePct, &t.MonthlyCostUSD); err != nil {
+			return nil, err
 		}
-		a.sum += t.ReliabilityScore
-		a.n++
-		a.cost += t.MonthlyCostUSD
+		out = append(out, t)
 	}
+	return out, rows.Err()
+}
 
-	if len(s.targets) > 0 {
-		ov.AvgScore = round1(scoreSum / float64(len(s.targets)))
+// Slos joins each SLO to its most recent error-budget snapshot via DISTINCT ON,
+// so the dashboard gets objective and current burn state in one round trip.
+func (s *Store) Slos(ctx context.Context) ([]domain.Slo, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT s.id, s.target_id, sv.name || ' @ ' || c.name, s.sli_type, s.objective_value,
+		       s.window_days, COALESCE(b.current_value,0), COALESCE(b.budget_remaining_pct,100),
+		       COALESCE(b.burn_rate,0)
+		FROM slo s
+		JOIN deployment_target t ON t.id = s.target_id
+		JOIN service sv ON sv.id = t.service_id
+		JOIN cluster c  ON c.id  = t.cluster_id
+		LEFT JOIN LATERAL (
+			SELECT current_value, budget_remaining_pct, burn_rate
+			FROM error_budget_snapshot
+			WHERE slo_id = s.id ORDER BY computed_at DESC LIMIT 1
+		) b ON true
+		WHERE s.is_active
+		ORDER BY b.burn_rate DESC NULLS LAST`)
+	if err != nil {
+		return nil, err
 	}
+	defer rows.Close()
 
-	for p, a := range byProvider {
-		ov.ScoreByProvider = append(ov.ScoreByProvider, domain.ProviderScore{
-			Provider: p, Score: round1(a.sum / float64(a.n)), Targets: a.n, CostUSD: a.cost,
-		})
-	}
-	sort.Slice(ov.ScoreByProvider, func(i, j int) bool {
-		return ov.ScoreByProvider[i].Score > ov.ScoreByProvider[j].Score
-	})
-
-	for _, a := range s.alerts {
-		if a.Status == domain.AlertOpen {
-			ov.OpenAlerts++
+	out := []domain.Slo{}
+	for rows.Next() {
+		var x domain.Slo
+		if err := rows.Scan(&x.ID, &x.TargetID, &x.TargetLabel, &x.SliType, &x.ObjectiveValue,
+			&x.WindowDays, &x.CurrentValue, &x.BudgetRemainingPct, &x.BurnRate); err != nil {
+			return nil, err
 		}
+		out = append(out, x)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ScalingEvents(ctx context.Context) ([]domain.ScalingEvent, error) {
+	return s.scalingEvents(ctx, 50)
+}
+
+func (s *Store) scalingEvents(ctx context.Context, limit int) ([]domain.ScalingEvent, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT e.id::text, e.target_id, sv.name || ' @ ' || c.name, e.previous_replicas,
+		       e.new_replicas, e.trigger_metric, e.trigger_value, e.strategy, e.decided_at
+		FROM scaling_event e
+		JOIN deployment_target t ON t.id = e.target_id
+		JOIN service sv ON sv.id = t.service_id
+		JOIN cluster c  ON c.id  = t.cluster_id
+		ORDER BY e.decided_at DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []domain.ScalingEvent{}
+	for rows.Next() {
+		var e domain.ScalingEvent
+		if err := rows.Scan(&e.ID, &e.TargetID, &e.TargetLabel, &e.PreviousReplicas,
+			&e.NewReplicas, &e.TriggerMetric, &e.TriggerValue, &e.Strategy, &e.DecidedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) HealingEvents(ctx context.Context) ([]domain.HealingEvent, error) {
+	return s.healingEvents(ctx, 50)
+}
+
+func (s *Store) healingEvents(ctx context.Context, limit int) ([]domain.HealingEvent, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT h.id::text, h.target_id, sv.name || ' @ ' || c.name, h.pod_name, h.reason,
+		       h.action_taken, h.detected_at, h.resolved_at
+		FROM healing_event h
+		JOIN deployment_target t ON t.id = h.target_id
+		JOIN service sv ON sv.id = t.service_id
+		JOIN cluster c  ON c.id  = t.cluster_id
+		ORDER BY h.detected_at DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []domain.HealingEvent{}
+	for rows.Next() {
+		var h domain.HealingEvent
+		if err := rows.Scan(&h.ID, &h.TargetID, &h.TargetLabel, &h.PodName, &h.Reason,
+			&h.ActionTaken, &h.DetectedAt, &h.ResolvedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) Alerts(ctx context.Context) ([]domain.Alert, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT a.id, a.target_id, sv.name || ' @ ' || c.name, a.severity, a.status,
+		       a.message, a.opened_at
+		FROM alert a
+		JOIN deployment_target t ON t.id = a.target_id
+		JOIN service sv ON sv.id = t.service_id
+		JOIN cluster c  ON c.id  = t.cluster_id
+		ORDER BY a.opened_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []domain.Alert{}
+	for rows.Next() {
+		var a domain.Alert
+		if err := rows.Scan(&a.ID, &a.TargetID, &a.TargetLabel, &a.Severity, &a.Status,
+			&a.Message, &a.OpenedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) Experiments(ctx context.Context) ([]domain.ExperimentRun, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT r.id, sv.name, COALESCE(c.name,''), r.run_type,
+		       COALESCE(r.fault_spec->>'type',''), r.status,
+		       COALESCE(r.score_before,0), COALESCE(r.score_during,0), COALESCE(r.score_after,0),
+		       r.started_at, r.ended_at
+		FROM evaluation_run r
+		JOIN service sv ON sv.id = r.service_id
+		LEFT JOIN deployment_target t ON t.id = r.target_id
+		LEFT JOIN cluster c ON c.id = t.cluster_id
+		ORDER BY r.started_at DESC LIMIT 50`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []domain.ExperimentRun{}
+	for rows.Next() {
+		var e domain.ExperimentRun
+		if err := rows.Scan(&e.ID, &e.ServiceName, &e.TargetLabel, &e.RunType, &e.FaultType,
+			&e.Status, &e.ScoreBefore, &e.ScoreDuring, &e.ScoreAfter,
+			&e.StartedAt, &e.EndedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) Policies(ctx context.Context) ([]domain.Policy, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT p.id, p.cluster_id, c.name, p.max_replicas, p.max_concurrent_experiments,
+		       p.protected_namespaces
+		FROM policy p JOIN cluster c ON c.id = p.cluster_id
+		ORDER BY c.name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []domain.Policy{}
+	for rows.Next() {
+		var p domain.Policy
+		if err := rows.Scan(&p.ID, &p.ClusterID, &p.ClusterName, &p.MaxReplicas,
+			&p.MaxConcurrentExperiments, &p.ProtectedNamespaces); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// SetAlertStatus transitions an alert and invalidates the cached overview, since
+// the open-alert count it reports has just changed.
+func (s *Store) SetAlertStatus(ctx context.Context, id, status string) (bool, error) {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE alert SET status = $2,
+		        acknowledged_at = CASE WHEN $2 = 'ACKNOWLEDGED' THEN now() ELSE acknowledged_at END,
+		        resolved_at     = CASE WHEN $2 = 'RESOLVED'     THEN now() ELSE resolved_at END
+		 WHERE id = $1`, id, status)
+	if err != nil {
+		return false, err
+	}
+	if tag.RowsAffected() == 0 {
+		return false, nil
+	}
+	s.cache.Invalidate(ctx, overviewCacheKey)
+	return true, nil
+}
+
+// Overview is the dashboard rollup: the most expensive read in the API, so it is
+// cached in Redis and invalidated on mutation.
+func (s *Store) Overview(ctx context.Context) (domain.Overview, error) {
+	var cached domain.Overview
+	if s.cache.GetJSON(ctx, overviewCacheKey, &cached) {
+		cached.CacheHit = true
+		return cached, nil
 	}
 
-	// Deterministic 14-day trend so the chart is stable across reloads.
+	ov := domain.Overview{}
+
+	if err := s.pool.QueryRow(ctx, `
+		SELECT (SELECT count(*) FROM cluster WHERE is_active),
+		       (SELECT count(*) FROM cluster WHERE is_active AND status = 'HEALTHY'),
+		       (SELECT count(*) FROM service),
+		       (SELECT count(*) FROM deployment_target WHERE is_active),
+		       (SELECT COALESCE(sum(replicas),0) FROM deployment_target WHERE is_active),
+		       (SELECT count(*) FROM alert WHERE status = 'OPEN'),
+		       (SELECT COALESCE(round(avg(reliability_score)::numeric,1),0) FROM deployment_target WHERE is_active),
+		       (SELECT COALESCE(sum(monthly_cost_usd),0) FROM deployment_target WHERE is_active)
+	`).Scan(&ov.TotalClusters, &ov.HealthyClusters, &ov.TotalServices, &ov.TotalTargets,
+		&ov.TotalReplicas, &ov.OpenAlerts, &ov.AvgScore, &ov.MonthlyCostUSD); err != nil {
+		return ov, err
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT c.provider_type, round(avg(t.reliability_score)::numeric,1), count(*),
+		       COALESCE(sum(t.monthly_cost_usd),0)
+		FROM deployment_target t JOIN cluster c ON c.id = t.cluster_id
+		WHERE t.is_active
+		GROUP BY c.provider_type ORDER BY 2 DESC`)
+	if err != nil {
+		return ov, err
+	}
+	for rows.Next() {
+		var p domain.ProviderScore
+		if err := rows.Scan(&p.Provider, &p.Score, &p.Targets, &p.CostUSD); err != nil {
+			rows.Close()
+			return ov, err
+		}
+		ov.ScoreByProvider = append(ov.ScoreByProvider, p)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return ov, err
+	}
+
+	if ov.RecentScaling, err = s.scalingEvents(ctx, 4); err != nil {
+		return ov, err
+	}
+	if ov.RecentHealing, err = s.healingEvents(ctx, 3); err != nil {
+		return ov, err
+	}
+
+	ov.ScoreTrend = buildTrend(ov.AvgScore)
+	ov.EngineStatus = engineStatus(len(ov.RecentScaling), len(ov.RecentHealing))
+	ov.ObservabilityFeed = observabilityFeed()
+
+	s.cache.SetJSON(ctx, overviewCacheKey, ov, 30*time.Second)
+	return ov, nil
+}
+
+// buildTrend produces a deterministic 14-day series so the chart is stable
+// across reloads. Real score history replaces this once the Evaluation Engine
+// populates reliability_score_snapshot in Phase 5.
+func buildTrend(base float64) []domain.ScorePoint {
 	rng := rand.New(rand.NewSource(42))
-	base := ov.AvgScore
+	out := make([]domain.ScorePoint, 0, 14)
 	for i := 13; i >= 0; i-- {
 		day := time.Now().UTC().AddDate(0, 0, -i)
 		drift := (rng.Float64() - 0.45) * 3.2
-		ov.ScoreTrend = append(ov.ScoreTrend, domain.ScorePoint{
+		out = append(out, domain.ScorePoint{
 			Date:  day.Format("Jan 02"),
-			Score: round1(clamp(base+drift, 70, 100)),
+			Score: math.Round(math.Min(math.Max(base+drift, 70), 100)*10) / 10,
 		})
 	}
+	return out
+}
 
-	ov.RecentScaling = topScaling(s.scaling, 4)
-	ov.RecentHealing = topHealing(s.healing, 3)
-
-	ov.EngineStatus = []domain.EngineStatus{
+func engineStatus(scaling, healing int) []domain.EngineStatus {
+	return []domain.EngineStatus{
 		{Name: "Deployment Engine", Status: "READY", Detail: "Awaiting Phase 3 client-go wiring", ActionsLast24h: 0},
-		{Name: "Auto-Scaling", Status: "ACTIVE", Detail: "4 strategies armed across 6 targets", ActionsLast24h: len(s.scaling)},
-		{Name: "Self-Healing", Status: "ACTIVE", Detail: "Watching 27 pods", ActionsLast24h: len(s.healing)},
-		{Name: "Policy Engine", Status: "ENFORCING", Detail: "4 cluster policies, 1 experiment rejected", ActionsLast24h: 1},
-		{Name: "Evaluation Engine", Status: "ACTIVE", Detail: "Probing 6 endpoints", ActionsLast24h: 1440},
-		{Name: "Experiment Engine", Status: "RUNNING", Detail: "1 chaos run in flight", ActionsLast24h: 4},
+		{Name: "Auto-Scaling", Status: "ACTIVE", Detail: "Strategies armed across targets", ActionsLast24h: scaling},
+		{Name: "Self-Healing", Status: "ACTIVE", Detail: "Watching pod health", ActionsLast24h: healing},
+		{Name: "Policy Engine", Status: "ENFORCING", Detail: "Cluster guardrails active", ActionsLast24h: 1},
+		{Name: "Evaluation Engine", Status: "ACTIVE", Detail: "Probing endpoints", ActionsLast24h: 1440},
+		{Name: "Experiment Engine", Status: "RUNNING", Detail: "Chaos runs in flight", ActionsLast24h: 4},
 	}
+}
 
-	ov.ObservabilityFeed = []domain.ObservabilitySource{
+func observabilityFeed() []domain.ObservabilitySource {
+	return []domain.ObservabilitySource{
 		{Name: "Prometheus", Kind: "Metrics", Status: "CONNECTED", IngestRate: "12.4k samples/s"},
 		{Name: "Loki", Kind: "Logs", Status: "CONNECTED", IngestRate: "3.1k lines/s"},
 		{Name: "OpenTelemetry", Kind: "Traces", Status: "CONNECTED", IngestRate: "840 spans/s"},
 	}
-
-	return ov
-}
-
-func topScaling(in []domain.ScalingEvent, n int) []domain.ScalingEvent {
-	out := append([]domain.ScalingEvent(nil), in...)
-	sort.Slice(out, func(i, j int) bool { return out[i].DecidedAt.After(out[j].DecidedAt) })
-	if len(out) > n {
-		out = out[:n]
-	}
-	return out
-}
-
-func topHealing(in []domain.HealingEvent, n int) []domain.HealingEvent {
-	out := append([]domain.HealingEvent(nil), in...)
-	sort.Slice(out, func(i, j int) bool { return out[i].DetectedAt.After(out[j].DetectedAt) })
-	if len(out) > n {
-		out = out[:n]
-	}
-	return out
-}
-
-func round1(v float64) float64 { return math.Round(v*10) / 10 }
-
-func clamp(v, lo, hi float64) float64 {
-	return math.Min(math.Max(v, lo), hi)
 }

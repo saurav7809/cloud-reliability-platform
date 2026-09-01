@@ -1,13 +1,55 @@
 services:
-  backend:
-    build: ./backend
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: aegiscloud
+      POSTGRES_PASSWORD: aegiscloud
+      POSTGRES_DB: aegiscloud
+    ports:
+      # Published on 55432, not 5432. A locally-installed PostgreSQL is extremely
+      # common on developer machines and silently wins the default port, which
+      # surfaces as "password authentication failed" against a database that is
+      # not this one. Containers still reach each other on postgres:5432.
+      - "55432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aegiscloud -d aegiscloud"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    # No persistence: everything here is a cache, and losing it must be
+    # survivable by design.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  control-plane:
+    build: ./control-plane
     ports:
       - "8080:8080"
     environment:
+      # Containers reach PostgreSQL on its own network at the standard port; only
+      # the host-published port is remapped (see the postgres service above).
+      DATABASE_URL: postgres://aegiscloud:aegiscloud@postgres:5432/aegiscloud?sslmode=disable
+      REDIS_ADDR: redis:6379
       AEGISCLOUD_ADMIN_EMAIL: admin@aegiscloud.local
       AEGISCLOUD_ADMIN_PASSWORD: changeme123
       AEGISCLOUD_JWT_SECRET: dev-secret-change-me
       AEGISCLOUD_WEB_ORIGIN: http://localhost:5173
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   web:
     image: node:20-alpine
@@ -22,7 +64,8 @@ services:
       VITE_API_URL: http://localhost:8080
       NODE_OPTIONS: --max-old-space-size=1024
     depends_on:
-      - backend
+      - control-plane
 
 volumes:
+  pgdata:
   web-node-modules:

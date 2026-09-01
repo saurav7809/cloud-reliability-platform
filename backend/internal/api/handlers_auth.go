@@ -2,6 +2,8 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
+	"log"
 	"net/http"
 
 	"github.com/aegiscloud/backend/internal/auth"
@@ -35,8 +37,11 @@ func (h *AuthHandlers) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := h.Store.Authenticate(req.Email, req.Password)
+	user, err := h.Store.Authenticate(r.Context(), req.Email, req.Password)
 	if err != nil {
+		if !errors.Is(err, auth.ErrInvalidCredentials) {
+			log.Printf("login lookup failed: %v", err)
+		}
 		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "invalid email or password")
 		return
 	}

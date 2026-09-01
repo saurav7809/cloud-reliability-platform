@@ -213,10 +213,13 @@ type Overview struct {
 	MonthlyCostUSD    float64              `json:"monthlyCostUsd"`
 	ScoreByProvider   []ProviderScore      `json:"scoreByProvider"`
 	ScoreTrend        []ScorePoint         `json:"scoreTrend"`
-	RecentScaling     []ScalingEvent       `json:"recentScaling"`
-	RecentHealing     []HealingEvent       `json:"recentHealing"`
-	EngineStatus      []EngineStatus       `json:"engineStatus"`
+	RecentScaling     []ScalingEvent        `json:"recentScaling"`
+	RecentHealing     []HealingEvent        `json:"recentHealing"`
+	EngineStatus      []EngineStatus        `json:"engineStatus"`
 	ObservabilityFeed []ObservabilitySource `json:"observabilityFeed"`
+	// CacheHit reports whether this rollup was served from Redis rather than
+	// recomputed. Surfaced so the cache can be observed instead of assumed.
+	CacheHit bool `json:"cacheHit"`
 }
 
 type ProviderScore struct {

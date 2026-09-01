@@ -1,9 +1,11 @@
 package auth
 
 import (
+	"context"
 	"errors"
-	"sync"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -16,46 +18,48 @@ const (
 )
 
 type User struct {
-	ID           string
-	Email        string
-	PasswordHash string
-	Role         Role
+	ID    string
+	Email string
+	Role  Role
 }
 
 var ErrInvalidCredentials = errors.New("invalid email or password")
 
-// Store is an in-memory user store for Phase 2 (Platform Foundation).
-// It will be replaced by the `app_user` table (see docs/phase-1-architecture/03-database.md)
-// once persistence lands with the Deployment Engine in Phase 3.
+// Store authenticates users against the app_user table.
 type Store struct {
-	mu    sync.RWMutex
-	users map[string]*User
+	pool *pgxpool.Pool
 }
 
-func NewStore() *Store {
-	return &Store{users: make(map[string]*User)}
+func NewStore(pool *pgxpool.Pool) *Store {
+	return &Store{pool: pool}
 }
 
-func (s *Store) Seed(email, password string, role Role) error {
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+// Authenticate verifies an email/password pair. A missing user and a wrong
+// password return the same error, and the bcrypt comparison runs either way, so
+// response timing does not reveal which accounts exist.
+func (s *Store) Authenticate(ctx context.Context, email, password string) (*User, error) {
+	var (
+		id, hash string
+		role     Role
+	)
+	err := s.pool.QueryRow(ctx,
+		`SELECT id, password_hash, role FROM app_user WHERE lower(email) = lower($1)`,
+		email,
+	).Scan(&id, &hash, &role)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Compare against a dummy hash to keep timing uniform.
+		bcrypt.CompareHashAndPassword(
+			[]byte("$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"),
+			[]byte(password))
+		return nil, ErrInvalidCredentials
+	}
 	if err != nil {
-		return err
+		return nil, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.users[email] = &User{ID: email, Email: email, PasswordHash: string(hash), Role: role}
-	return nil
-}
 
-func (s *Store) Authenticate(email, password string) (*User, error) {
-	s.mu.RLock()
-	u, ok := s.users[email]
-	s.mu.RUnlock()
-	if !ok {
+	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)); err != nil {
 		return nil, ErrInvalidCredentials
 	}
-	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)); err != nil {
-		return nil, ErrInvalidCredentials
-	}
-	return u, nil
+	return &User{ID: id, Email: email, Role: role}, nil
 }

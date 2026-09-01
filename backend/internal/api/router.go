@@ -9,12 +9,19 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aegiscloud/backend/internal/auth"
+	"github.com/aegiscloud/backend/internal/cache"
 	"github.com/aegiscloud/backend/internal/store"
 )
 
-func NewRouter() http.Handler {
+type Deps struct {
+	Pool  *pgxpool.Pool
+	Cache *cache.Cache
+}
+
+func NewRouter(deps Deps) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
@@ -25,19 +32,16 @@ func NewRouter() http.Handler {
 		AllowCredentials: true,
 	}))
 
-	userStore := auth.NewStore()
-	seedEmail := envOr("AEGISCLOUD_ADMIN_EMAIL", "admin@aegiscloud.local")
-	seedPassword := envOr("AEGISCLOUD_ADMIN_PASSWORD", "changeme123")
-	if err := userStore.Seed(seedEmail, seedPassword, auth.RoleAdmin); err != nil {
-		panic(err)
-	}
+	userStore := auth.NewStore(deps.Pool)
+	tokenManager := auth.NewTokenManager(
+		envOr("AEGISCLOUD_JWT_SECRET", "dev-secret-change-me"), 24*time.Hour)
 
-	tokenManager := auth.NewTokenManager(envOr("AEGISCLOUD_JWT_SECRET", "dev-secret-change-me"), 24*time.Hour)
 	authHandlers := &AuthHandlers{Store: userStore, Tokens: tokenManager}
-	platform := &PlatformHandlers{Store: store.New()}
+	platform := &PlatformHandlers{Store: store.New(deps.Pool, deps.Cache)}
+	health := &HealthHandlers{Pool: deps.Pool, Cache: deps.Cache}
 
 	r.Get("/", IndexHandler)
-	r.Get("/healthz", HealthHandler)
+	r.Get("/healthz", health.Health)
 
 	// API documentation is public in dev so the spec is reachable without a token.
 	r.Get("/openapi.yaml", OpenAPISpecHandler)
@@ -74,8 +78,8 @@ func NewRouter() http.Handler {
 	return r
 }
 
-// allowedOrigins reads a comma-separated origin list so a deployed frontend can be
-// added without a code change.
+// allowedOrigins reads a comma-separated origin list so a deployed frontend can
+// be added without a code change.
 func allowedOrigins() []string {
 	raw := envOr("AEGISCLOUD_WEB_ORIGIN", "http://localhost:5173")
 	parts := strings.Split(raw, ",")
