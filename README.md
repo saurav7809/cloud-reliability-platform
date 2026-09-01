@@ -27,9 +27,9 @@ foundational design.
 | Phase | Status |
 |---|---|
 | 1 — Architecture (requirements, architecture, database, APIs) | ✅ done |
-| 2 — Platform Foundation (Go backend, React dashboard, auth, Docker, kind, sample workloads) | ✅ done |
-| 3 — Deployment Engine (client-go, cluster registration, PostgreSQL) | ⏳ next |
-| 4 — Control Plane (Auto-Scaling, Self-Healing, Policy Engine, autonomy levels) | planned |
+| 2 — Platform Foundation (Spring Boot control plane, React dashboard, auth, Docker, kind, sample workloads) | ✅ done |
+| 3 — Deployment Engine (fabric8 Kubernetes client, cluster registration, PostgreSQL) | ✅ done |
+| 4 — Control Plane (Auto-Scaling, Self-Healing, Policy Engine, autonomy levels, live event stream) | ✅ done |
 | 5 — Evaluation Engine (probes, telemetry ingestion, SLOs, scoring) | planned |
 | 6 — Experiment Engine (chaos — also the ground truth for measuring RCA) | planned |
 | 7 — Dependency & Propagation (service graph, blast radius, SPOF) | planned |
@@ -68,8 +68,12 @@ docs/phase-1-architecture/
 ## Repo Layout
 
 ```
-backend/    Go API server (chi router, JWT auth, OpenAPI) — Deployment/Control Plane/
-            Evaluation/Experiment engines land in later phases
+control-plane/  Spring Boot 3.5 / Java 17 control plane — REST API, JWT auth via Spring
+                Security, Flyway schema, and the Deployment Engine (fabric8). This is
+                the backend.
+backend/        The original Go implementation. Superseded by control-plane/ and kept
+                only as the reference the port was checked against; it is no longer
+                built by docker compose.
 web/        React + Vite + TypeScript operator dashboard
 workloads/  Deliberately failable sample service + manifests, so the platform has real
             pods to scale, heal and break (see workloads/README.md)
@@ -90,11 +94,16 @@ docker compose up --build
 - Seeded login: `admin@aegiscloud.local` / `changeme123` (override via
   `AEGISCLOUD_ADMIN_EMAIL` / `AEGISCLOUD_ADMIN_PASSWORD` env vars)
 
-**Backend only, without Docker** (needs Go 1.22+):
+**Control plane only, without Docker** (needs JDK 17 and Maven):
 ```bash
-cd backend
-go run ./cmd/server
+cd control-plane
+DATABASE_URL='postgres://aegiscloud:aegiscloud@localhost:55432/aegiscloud?sslmode=disable' \
+REDIS_ADDR=localhost:6379 \
+mvn spring-boot:run
 ```
+Note the port: `docker compose` publishes PostgreSQL on **55432**, not 5432, so a
+PostgreSQL already installed on the host is left alone. Containers still reach it at
+`postgres:5432`.
 
 **Frontend only, without Docker** (needs Node — set `VITE_API_URL` if the backend isn't on
 `localhost:8080`):
@@ -140,16 +149,115 @@ Six screens over the platform API, styled as a dark operator console:
 
 ## Verified So Far
 
-- `go vet` and `go build` pass; the backend Docker image builds and runs.
-- Full login flow tested end-to-end in a real browser against `docker compose up`: sign in →
-  JWT issued → `/api/v1/auth/me` returns the authenticated admin profile → dashboard renders.
-  Wrong password and missing token both correctly return 401.
-- `kind` cluster `aegiscloud-local` created and healthy (control-plane node `Ready`,
-  Kubernetes v1.37.0), with the `aegiscloud` namespace applied.
-- All six dashboard screens rendered and clicked through in a browser with no console
-  errors; acknowledging an alert round-trips through the API and updates the badge count.
-- The in-memory user store in `internal/auth/store.go` is a deliberate Phase 2 simplification —
-  it will be replaced by the `app_user` table once persistence lands with the Deployment Engine.
+### Phase 4 — Control Plane
+
+Observed against the running stack (PostgreSQL 16 + Redis 7 in Compose, kind cluster
+`aegiscloud-local` on Kubernetes v1.37.0, metrics-server installed):
+
+**The loop**
+- `POST /api/v1/control-plane/reconcile` runs the same method the scheduler runs; a
+  cycle over the kind target reads live CPU utilisation from metrics-server
+  (0.6% of the declared request) rather than any stored figure.
+- 34 unit tests cover every scaling rule, the flapping guard and the whole failure
+  taxonomy, with no cluster involved.
+
+**Autonomy levels**
+- At the default SUGGEST, a scale-down was decided, policy-checked and written to the
+  ledger while the Deployment stayed at 3/3 replicas.
+- Promoted to ACT through `PUT /control-plane/autonomy`, the loop scaled the same
+  workload 3 → 2 unattended and recorded `scaling_event` plus an `autonomous_action`
+  row with its trigger value.
+- The immediately following cycle held: *"held: last scaled 1s ago, 178s of the 180s
+  cooldown remain"*.
+
+**Policy**
+- With `aegiscloud` added to `protectedNamespaces`, the identical decision came back
+  `REJECTED` with the reason recorded, and the cluster was not touched.
+
+**Self-healing**
+- A deliberately broken image (`ImagePullBackOff`) was classified
+  `IMAGE_PULL_FAILURE` and **escalated, not restarted** — "a restart would fail
+  identically" — with a `healing_event` row and no pod deletion.
+
+**Verification**
+- The applied scale-down was judged on a later cycle against the readiness it started
+  from and closed as `NO_CHANGE` (100% → 100%), not left PENDING.
+
+**Real time**
+- `GET /api/v1/control-plane/stream` pushes `cycle-started`, `decision`, `scaling`,
+  `healing`, `outcome` and `cycle-finished` as Server-Sent Events. Verified with a
+  live subscription: events arrived as each decision was made, keep-alive comments hold
+  the connection open, and the response carries
+  `Access-Control-Allow-Origin: http://localhost:5173`. The dashboard's Control Plane
+  page renders them in a Live Activity feed; `tsc -b` passes.
+
+### Phase 3
+
+
+Phase 3, observed against a running stack (PostgreSQL 16 + Redis 7 in Compose, kind
+cluster `aegiscloud-local` on Kubernetes v1.37.0):
+
+**Control plane**
+- Flyway applies all 23 tables to an empty database on first boot; the seeder is
+  idempotent and skips a populated one.
+- All 10 read endpoints return 200 with row counts matching the seeded fleet.
+  Aggregates check out by hand: 27 replicas, average score 92.9, $5,438.30/month.
+- Login issues a JWT; wrong password, unknown user, missing token and malformed token
+  all return 401 with the documented error envelope.
+- RBAC enforced through `@PreAuthorize`: a VIEWER reads every endpoint (200) and is
+  refused both alert mutations (403). ADMIN succeeds on both.
+- Acknowledge/resolve persist and invalidate the cached rollup — `openAlerts` drops
+  and `cacheHit` returns to false on the next read.
+- A malformed alert id returns 404 rather than 500.
+
+**Degradation**
+- With Redis stopped, `/api/v1/overview` still returns 200 and `/healthz` reports
+  `redis: disabled` while staying 200. A follow-up request completes in 82ms, so a
+  dead cache is not being waited on.
+
+**Deployment Engine (fabric8 7.8.0)**
+- Probing `aegiscloud-local` reads 1/1 nodes ready and Kubernetes v1.37.0 live from
+  the API, and writes both back to the cluster row.
+- The three cloud clusters hold no kubeconfig on this machine and are reported
+  `UNREACHABLE` with "no kubeconfig context configured" — not as healthy inventory.
+- Deploying `aegiscloud/sample-service:v1` to the kind cluster through
+  `POST /api/v1/deployments` rolled out 2/2 pods; re-sending the same request
+  converges instead of duplicating containers.
+- The engine refuses to modify a deployment it does not own unless `adopt=true`, and
+  the foreign workload is left untouched when it does.
+
+**Frontend**
+- `tsc -b` passes against the Java API's response types.
+- Login and every data fetch succeed cross-origin from `http://localhost:5173` with
+  correct `Access-Control-Allow-Origin` headers.
+
+**Application & Microservice Onboarding**, observed against a real public repository
+(`GoogleCloudPlatform/microservices-demo`, 458 files, 12 polyglot services):
+
+- `POST /api/v1/applications/{id}/repository` calls the real GitHub API, resolves
+  the default branch, and records success/failure with a human-readable detail.
+- `POST /api/v1/applications/{id}/discover` recursively scans the tree and correctly
+  identified all 12 services with their real languages (Java, Go, Python, C#,
+  JavaScript) and build tools, including a nested `src/cartservice/src` directory
+  named after its parent rather than its literal path segment.
+- Ports were read from the actual `EXPOSE` lines in each service's Dockerfile and
+  matched the repository's real values (e.g. adservice 9555, productcatalogservice
+  3550, shippingservice 50051) — nothing here is guessed or defaulted.
+- Re-running discovery updated the 12 existing rows rather than duplicating them, and
+  left the 3 hand-seeded services (checkout/catalog/auth) untouched, since discovery
+  only overwrites rows it created itself.
+- Resource validation rejects a limit set below its request (400, not a raw
+  constraint-violation stack trace); a valid update persists and reads back.
+- A secret-flagged environment variable is never stored in plaintext — `PUT` accepts
+  a value but the row (and every subsequent read) returns `value: null` once
+  `secret: true` is set.
+- RBAC holds here too: VIEWER reads every onboarding endpoint (200) and is refused
+  every write (403); ADMIN succeeds on both.
+
+**Not yet verified:** the six dashboard screens have not been re-checked visually in a
+browser against the Java backend — the HTTP layer beneath them is verified above, but
+nobody has looked at the rendered pages since the port. The dashboard has no UI yet
+for the onboarding endpoints above; they exist only as API surface yet.
 
 ## Known Environment Notes
 
