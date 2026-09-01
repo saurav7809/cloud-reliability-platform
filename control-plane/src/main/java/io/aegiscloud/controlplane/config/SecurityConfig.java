@@ -65,7 +65,11 @@ public class SecurityConfig {
                         .requestMatchers("/", "/healthz", "/actuator/health/**",
                                 "/openapi.yaml", "/swagger", "/swagger-ui/**",
                                 "/v3/api-docs/**").permitAll()
-                        .requestMatchers("/api/v1/auth/login").permitAll()
+                        // Sign-up is public by necessity: there is no token to
+                        // present before an account exists. It creates an empty
+                        // organisation, and tenant scoping keeps it that way.
+                        .requestMatchers("/api/v1/auth/login", "/api/v1/auth/signup",
+                                "/api/v1/auth/signup/enabled").permitAll()
                         .requestMatchers("/api/v1/**").authenticated()
                         .anyRequest().permitAll())
                 .exceptionHandling(e -> e

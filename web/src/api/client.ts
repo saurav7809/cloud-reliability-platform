@@ -188,6 +188,23 @@ export const login = (email: string, password: string) =>
   });
 
 export const me = (t: string) => authed<MeResponse>("/api/v1/auth/me", t);
+
+/**
+ * Creates a new organisation and signs its first administrator straight in.
+ *
+ * The account starts with nothing: tenant scoping is enforced in the API's own
+ * queries, so a new organisation sees no cluster, service or incident belonging
+ * to anyone else.
+ */
+export const signUp = (email: string, password: string, organisationName: string) =>
+  request<LoginResponse>("/api/v1/auth/signup", {
+    method: "POST",
+    body: JSON.stringify({ email, password, organisationName }),
+  });
+
+/** Whether this deployment offers self-service registration at all. */
+export const signupEnabled = () =>
+  request<{ enabled: boolean }>("/api/v1/auth/signup/enabled").then((r) => r.enabled);
 export const getOverview = (t: string) => authed<Overview>("/api/v1/overview", t);
 export const getClusters = (t: string) => authed<Cluster[]>("/api/v1/clusters", t);
 export const getServices = (t: string) => authed<Service[]>("/api/v1/services", t);

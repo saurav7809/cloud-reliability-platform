@@ -149,6 +149,51 @@ Six screens over the platform API, styled as a dark operator console:
 
 ## Verified So Far
 
+### Sign-up and user management
+
+Self-service registration, colleague invites, and role changes.
+
+**Why open sign-up is safe here, and would not have been two phases ago.** Signing up
+creates a *new organisation*, and tenant isolation is enforced inside every query — a
+stranger who registers gets an empty organisation and sees no cluster, service or
+incident belonging to anyone else. Verified on the live platform: a fresh account reads
+`clusters=0 services=0 targets=0`. Before that boundary existed, this endpoint would
+have handed any passer-by the whole fleet. It can still be switched off with
+`AEGISCLOUD_SIGNUP_ENABLED=false`, which is what a single-company deployment wants.
+
+**Password rules: length, not symbols.** Twelve characters minimum and no composition
+requirements, following NIST's reasoning — `Passw0rd!` satisfies every
+upper-lower-digit-symbol rule ever written and is on every cracking list, while
+`these are the days of miracle` is not. The one substring rule that earns its place
+rejects a password containing your own email address.
+
+Observed refusals:
+
+```
+"nope"                          -> a valid email address is required
+"Passw0rd!"                     -> must be at least 12 characters; length matters
+                                   more than symbols, so a memorable phrase is fine
+samantha / "samantha12345"      -> the password must not contain your email address
+admin@aegiscloud.local          -> an account already exists for that address
+```
+
+**Invites and roles.** The first account in an organisation is necessarily ADMIN —
+somebody has to invite the second, and an organisation whose only user cannot
+administer it is a support ticket by construction. The organisation comes from the
+caller's token and never from the request body, because an organisation id in the body
+would let one administrator create accounts inside another tenant.
+
+Verified: an invited OPERATOR can list members (200) but cannot invite (403) or read
+the audit trail (403); and the last remaining administrator cannot demote themselves —
+*"this is the organisation's only administrator; promote someone else first"* — because
+an organisation with no ADMIN is locked out of itself with no way back.
+
+Sign-up is audited as an ENGINE action rather than a USER one: there is no
+authenticated caller during registration, and attributing it to the account being
+created would claim they authorised something before they existed.
+
+
+
 ### Closing the last four requirements
 
 Four requirements the platform had stated and not met. Nothing else from the

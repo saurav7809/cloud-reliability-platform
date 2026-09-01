@@ -623,3 +623,22 @@ tbody tr:hover td {
 .live-text {
   overflow-wrap: anywhere;
 }
+
+/* A link that is a button, for switching between signing in and registering. */
+.link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent, #4f8cff);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.field-hint {
+  display: block;
+  margin-top: 4px;
+  color: var(--dim, #5d6879);
+  font-size: 12px;
+  line-height: 1.4;
+}

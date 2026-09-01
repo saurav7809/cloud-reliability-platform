@@ -121,3 +121,11 @@ aegiscloud:
   # route says so rather than failing; the push route works regardless.
   prometheus:
     url: ${AEGISCLOUD_PROMETHEUS_URL:}
+
+  # Self-service registration. Safe to leave on because sign-up creates a new,
+  # empty organisation and tenant scoping is enforced in every query - a stranger
+  # who registers sees nothing of anyone else's fleet. Deployments inside a single
+  # company usually want accounts created by an administrator instead, and set
+  # this to false; the endpoint then answers 403 with a reason.
+  signup:
+    enabled: ${AEGISCLOUD_SIGNUP_ENABLED:true}
