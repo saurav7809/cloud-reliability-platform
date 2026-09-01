@@ -32,7 +32,7 @@ foundational design.
 | 4 — Control Plane (Auto-Scaling, Self-Healing, Policy Engine, autonomy levels, live event stream) | ✅ done |
 | 5 — Evaluation Engine (synthetic probes, SLO evaluation, error budgets, reliability scoring) | ✅ done |
 | 6 — Experiment Engine (chaos, safety rules, steady-state hypothesis, always restores) | ✅ done |
-| 7 — Dependency & Propagation (service graph, blast radius, SPOF) | planned |
+| 7 — Dependency & Propagation (service graph, blast radius, SPOF, critical path) | ✅ done |
 | 8 — Root Cause Analysis (multi-signal correlation, explainable verdicts) | planned |
 | 9 — Optimization Advisor (cost + performance recommendations) | planned |
 | 10 — Multi-Cloud & Hardening (real EKS/AKS/GKE, multi-tenancy, production) | planned |
@@ -147,6 +147,55 @@ Six screens over the platform API, styled as a dark operator console:
 > client-go. The dashboard says so on its Overview screen rather than implying live data.
 
 ## Verified So Far
+
+### Phase 7 — Dependency & Propagation
+
+The graph, built over the real `microservices-demo` topology discovered in Phase 3
+(15 services, 19 declared edges):
+
+```
+entry points        loadgenerator, checkout-service, shoppingassistantservice
+critical path       loadgenerator -> frontend -> checkoutservice -> shippingservice
+                    -> currencyservice
+single points of    frontend        cuts 9 services off from every entry point
+failure             checkoutservice cuts 2
+largest blast       currencyservice 4 affected · productcatalogservice 4 · cartservice 3
+radius
+```
+
+Every one of those is computed by removal and traversal, not by counting edges.
+A single point of failure is found by taking the service out and seeing what can no
+longer be reached from any entry point — which is why `auth` and `catalog` in the
+test topology are correctly *not* flagged: the database below them is reachable
+through either, so neither alone isolates anything.
+
+**Direction is the thing that matters.** An edge `A -> B` means A calls B, so failure
+travels backwards: blast radius walks the reverse graph. Getting that inverted
+produces an answer that is confidently and exactly wrong, so it has its own test.
+
+**Discovery from experiments.** A `DEPENDENCY_OUTAGE` experiment now records the edges
+it demonstrates. Taking `auth-service` to zero and watching `catalog-service`
+throughout produced: *"catalog-service held up (100.0 -> 100.0); no dependency
+recorded"* — which is correct, since the two sample workloads genuinely are
+independent. An absent edge is honest; an invented one produces a blast radius that
+looks authoritative and is wrong.
+
+This is a stronger signal than a trace, and a narrower one. A trace shows that A
+called B; an experiment shows that A stops working when B does — which is what a
+dependency edge actually claims. It cannot find dependencies nobody has experimented
+on, so `MANUAL` and (once tracing is deployed) `TRACE` edges remain the broader source.
+
+**A gap this phase exposed.** The platform could deploy a workload but had no way to
+register it as a managed target, so a rolled-out service was invisible to scaling,
+healing, evaluation and experiments — all of which read `deployment_target`.
+`POST /api/v1/targets` closes that, and refuses to register a target whose workload is
+not actually running.
+
+**Scale.** 200 services and 1000 edges: blast radius, criticality ranking and the full
+single-point-of-failure sweep complete well inside the interactive-latency target,
+with cycles, disconnected components and unknown edge endpoints all covered by tests.
+
+
 
 ### Phase 6 — Experiment Engine
 

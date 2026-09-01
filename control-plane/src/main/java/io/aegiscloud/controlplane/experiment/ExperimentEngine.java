@@ -4,6 +4,8 @@ import io.aegiscloud.controlplane.engine.ControlPlaneEvents;
 import io.aegiscloud.controlplane.engine.ControlPlaneStore;
 import io.aegiscloud.controlplane.engine.PolicyLimits;
 import io.aegiscloud.controlplane.eval.EvaluationEngine;
+import io.aegiscloud.controlplane.eval.EvaluationStore;
+import io.aegiscloud.controlplane.graph.DependencyDiscovery;
 import io.aegiscloud.controlplane.k8s.WorkloadOperations;
 import io.aegiscloud.controlplane.k8s.WorkloadOperations.PodObservation;
 import io.aegiscloud.controlplane.k8s.WorkloadOperations.WorkloadObservation;
@@ -52,6 +54,8 @@ public class ExperimentEngine {
     private final ControlPlaneStore controlPlane;
     private final WorkloadOperations workloads;
     private final EvaluationEngine evaluation;
+    private final EvaluationStore evaluationStore;
+    private final DependencyDiscovery discovery;
     private final ControlPlaneEvents events;
 
     /**
@@ -69,11 +73,14 @@ public class ExperimentEngine {
 
     public ExperimentEngine(ExperimentStore store, ControlPlaneStore controlPlane,
                             WorkloadOperations workloads, EvaluationEngine evaluation,
+                            EvaluationStore evaluationStore, DependencyDiscovery discovery,
                             ControlPlaneEvents events) {
         this.store = store;
         this.controlPlane = controlPlane;
         this.workloads = workloads;
         this.evaluation = evaluation;
+        this.evaluationStore = evaluationStore;
+        this.discovery = discovery;
         this.events = events;
     }
 
@@ -161,11 +168,26 @@ public class ExperimentEngine {
         String status = "COMPLETED";
         Double scoreDuring = null;
 
+        // For a dependency outage, what every other service scored before the fault
+        // is the baseline the discovered edges rest on. It has to be taken before
+        // anything is broken.
+        Map<UUID, Double> baseline = request.faultType() == FaultType.DEPENDENCY_OUTAGE
+                ? measureEveryOtherTarget(faultTarget.targetId())
+                : Map.of();
+
         try {
             Injection injection = inject(request, faultTarget, before);
             outcome.put("injected", injection.description());
 
             Observation observation = observe(runId, target, request);
+
+            if (request.faultType() == FaultType.DEPENDENCY_OUTAGE) {
+                // Measured while the dependency is still down: this is the only
+                // moment the platform can tell which services actually need it,
+                // rather than which ones merely talk to it.
+                outcome.put("dependenciesDiscovered",
+                        discoverDependencies(faultTarget, baseline));
+            }
             scoreDuring = observation.worstScore();
             outcome.put("observedMinimumScore", observation.worstScore());
             outcome.put("hypothesisHeld", !observation.aborted());
@@ -212,6 +234,58 @@ public class ExperimentEngine {
                 "scoreDuring", scoreDuring == null ? -1 : scoreDuring,
                 "scoreAfter", scoreAfter == null ? -1 : scoreAfter,
                 "restored", String.valueOf(outcome.get("restored"))));
+    }
+
+    /**
+     * Scores every other target that has endpoints, so a dependency outage can be
+     * compared against a real baseline rather than against an assumption.
+     */
+    private Map<UUID, Double> measureEveryOtherTarget(UUID excludedTargetId) {
+        Map<UUID, Double> scores = new LinkedHashMap<>();
+
+        evaluationStore.activeEndpoints().stream()
+                .map(EvaluationStore.ProbeEndpoint::targetId)
+                .distinct()
+                .filter(id -> !id.equals(excludedTargetId))
+                .forEach(id -> evaluation.measureTarget(id)
+                        .ifPresent(score -> scores.put(id, score)));
+
+        return scores;
+    }
+
+    /**
+     * Records the edges this outage demonstrated.
+     *
+     * <p>A service that degraded while the dependency was down depends on it. A
+     * service that carried on did not — and recording nothing for that case is the
+     * point: an absent edge is honest, while an invented one produces a blast radius
+     * that looks authoritative and is wrong.
+     */
+    private List<String> discoverDependencies(ExperimentStore.ExperimentTarget faultTarget,
+                                              Map<UUID, Double> baseline) {
+        if (baseline.isEmpty()) {
+            return List.of("no other target has endpoints registered, so nothing could be measured");
+        }
+
+        List<DependencyDiscovery.ObservedImpact> impacts = new java.util.ArrayList<>();
+
+        for (Map.Entry<UUID, Double> entry : baseline.entrySet()) {
+            UUID targetId = entry.getKey();
+            OptionalDouble during = evaluation.measureTarget(targetId);
+            if (during.isEmpty()) {
+                continue;
+            }
+
+            UUID serviceId = discovery.serviceOf(targetId).orElse(null);
+            if (serviceId == null) {
+                continue;
+            }
+
+            store.target(targetId).ifPresent(t -> impacts.add(new DependencyDiscovery.ObservedImpact(
+                    serviceId, t.serviceName(), entry.getValue(), during.getAsDouble())));
+        }
+
+        return discovery.recordFromOutage(faultTarget.serviceId(), impacts).findings();
     }
 
     /** What was done, and what it takes to undo it. */
