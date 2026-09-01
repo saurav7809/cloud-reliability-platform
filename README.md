@@ -149,6 +149,50 @@ Six screens over the platform API, styled as a dark operator console:
 
 ## Verified So Far
 
+### Container build and deployment history
+
+The platform can now produce the images it runs, and remembers what it deployed.
+
+**It built its own workload.** From
+`github.com/saurav7809/cloud-reliability-platform` at `workloads/sample-service`,
+pushed to the local registry, then deployed:
+
+```
+POST /api/v1/builds     -> RUNNING   (Kaniko Job in aegiscloud-builds)
+GET  /api/v1/builds/{id}-> SUCCEEDED "image pushed to the registry"
+registry catalog        -> {"tags":["registry-test","built-by-platform"]}
+catalog now runs        kind-registry:5000/aegiscloud/sample-service:built-by-platform
+```
+
+**Kaniko rather than `docker build`, deliberately.** Shelling out to Docker means
+mounting a Docker socket into the control plane, and a socket is root on the host. A
+component trusted with production clusters should not also hold the key to the machine
+it runs on. Running the build as a Kubernetes Job also keeps the architectural rule
+intact: the same code builds on kind and on EKS, and progress is visible to anyone with
+cluster access rather than only in the platform's logs.
+
+**Deployment history and rollback.** Every rollout is recorded with the image it
+replaced — captured at deploy time, because "what was running before" stops being
+answerable the moment the object is overwritten. Failed rollouts are recorded too: a
+failed deployment is what an incident investigation most wants to find.
+
+Rollback reads its target from history rather than from the caller. Requiring someone
+to remember the previous tag at the moment they are least able to is how a rollback
+becomes a second outage:
+
+```
+one deployment recorded  -> refused: "no earlier successful deployment to roll back to"
+two recorded             -> rolled back to ...:built-by-platform without being told which
+```
+
+**Known limits, stated rather than hidden.** Builds clone public repositories over
+HTTPS; private ones need secrets management the platform has not built, and accepting a
+token in a request body would be worse than the limitation. A build whose Job vanished
+before completion is recorded FAILED, not RUNNING — the honest statement is that the
+outcome was not observed, and an unobserved build must never read as a success.
+
+
+
 ### Sign-up and user management
 
 Self-service registration, colleague invites, and role changes.
