@@ -88,7 +88,8 @@ public class MicroserviceController {
             String scalingStrategy,
             Double latencyObjectiveMs,
             Double availabilityObjectivePct,
-            Map<String, String> dependencies) {
+            Map<String, String> dependencies,
+            String applicationId) {
     }
 
     /** Each step, named, so a partial registration is legible. */
@@ -117,10 +118,21 @@ public class MicroserviceController {
                 .orElseThrow(() -> ApiException.notFound(
                         "cluster " + request.cluster() + " not found"));
 
-        // 1. Declare it.
+        // 1. Declare it, as part of an application when one was named.
+        UUID applicationId = null;
+        if (!blank(request.applicationId())) {
+            applicationId = UUID.fromString(request.applicationId());
+            if (!targets.applicationBelongsTo(orgId, applicationId)) {
+                throw ApiException.notFound("application " + request.applicationId() + " not found");
+            }
+        }
+
         UUID serviceId = targets.createService(orgId, request.name(),
-                "registered through the platform from " + request.image(), request.ownerTeam());
-        steps.add("declared service " + request.name());
+                "registered through the platform from " + request.image(), request.ownerTeam(),
+                applicationId);
+        steps.add(applicationId == null
+                ? "declared service " + request.name()
+                : "declared service " + request.name() + " as part of the application");
 
         // 2. Deploy it. Dependencies reach the container as environment, which is how
         //    a service is told where the things it calls actually live.
@@ -182,6 +194,12 @@ public class MicroserviceController {
         return new RegisterResult(serviceId.toString(), targetId.toString(), request.name(),
                 namespace, true, true, true, steps,
                 "registered and being measured; the first score appears within a probe cycle");
+    }
+
+    /** Applications, and how many microservices each holds. */
+    @GetMapping("/applications")
+    public List<TargetRegistry.ApplicationSummary> applications() {
+        return targets.applications(Tenant.currentOrgId());
     }
 
     /** A registered microservice with its live cluster state beside its recorded one. */

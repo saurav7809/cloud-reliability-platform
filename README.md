@@ -22,6 +22,41 @@ interchangeable targets rather than special cases.
 Being built phase by phase. See [docs/phase-1-architecture](docs/phase-1-architecture) for the
 foundational design.
 
+## What it is
+
+AegisCloud is a Kubernetes platform for registering Docker images, defining
+applications and microservices, and automatically deploying, running, managing and
+monitoring them.
+
+That core is the foundation, and everything else exists because of it. Once the
+platform is running a service it deployed, it can measure that service, notice when
+it is under load and scale it, notice when it has failed and recover it, break it on
+purpose to find out what depends on it, and diagnose which of several failing
+services is the one actually broken. None of those capabilities would mean anything
+against a service the platform had merely been told about.
+
+The backend is one modular Spring Boot application, not a distributed system of its
+own. A control plane made of microservices would be a second reliability problem to
+solve before the first one had been solved, and the module boundaries in the source
+tree — `k8s`, `eval`, `engine`, `experiment`, `graph`, `rca`, `optimize`, `alerting`
+— already give the separation that matters. The single exception is the Python AI
+service, which is a separate process because it does a different kind of work, and
+which the platform runs perfectly well without.
+
+```
+React + TypeScript
+        |
+   Spring Boot control plane
+        |
+  +-----+-----+-----------+
+  |           |           |
+PostgreSQL  Redis   Kubernetes API
+                          |
+                     Docker images
+                          |
+                     microservices
+```
+
 ## Phases
 
 | Phase | Status |

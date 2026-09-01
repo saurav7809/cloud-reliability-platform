@@ -4,6 +4,7 @@ import io.aegiscloud.controlplane.domain.Models;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -32,15 +33,57 @@ public class TargetRegistry {
      * not a second service.
      */
     public UUID createService(UUID orgId, String name, String description, String ownerTeam) {
+        return createService(orgId, name, description, ownerTeam, null);
+    }
+
+    /**
+     * Creates a service, optionally as part of an application.
+     *
+     * <p>An application is the unit a team thinks in — "checkout" is three services —
+     * and leaving the link null when one was given would make the application view
+     * quietly incomplete rather than obviously empty. The existing application is
+     * kept when none is supplied, so re-registering a service does not orphan it.
+     */
+    public UUID createService(UUID orgId, String name, String description, String ownerTeam,
+                              UUID applicationId) {
         return jdbc.queryForObject("""
-                INSERT INTO service (org_id, name, description, owner_team)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO service (org_id, name, description, owner_team, application_id)
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT (org_id, name) DO UPDATE SET
                     description = COALESCE(EXCLUDED.description, service.description),
                     owner_team = COALESCE(EXCLUDED.owner_team, service.owner_team),
+                    application_id = COALESCE(EXCLUDED.application_id, service.application_id),
                     updated_at = now()
                 RETURNING id
-                """, UUID.class, orgId, name, description, ownerTeam);
+                """, UUID.class, orgId, name, description, ownerTeam, applicationId);
+    }
+
+    /** Applications in one organisation, with how many services each holds. */
+    public List<ApplicationSummary> applications(UUID orgId) {
+        return jdbc.query("""
+                SELECT a.id::text, a.name, p.name AS project_name,
+                       COALESCE(a.description, '') AS description,
+                       (SELECT count(*) FROM service s WHERE s.application_id = a.id) AS services
+                FROM application a
+                JOIN project p ON p.id = a.project_id
+                WHERE p.org_id = ?
+                ORDER BY p.name, a.name
+                """, (rs, i) -> new ApplicationSummary(rs.getString(1), rs.getString(2),
+                rs.getString(3), rs.getString(4), rs.getInt(5)), orgId);
+    }
+
+    public record ApplicationSummary(String id, String name, String projectName,
+                                     String description, int services) {
+    }
+
+    /** Whether an application belongs to this organisation. */
+    public boolean applicationBelongsTo(UUID orgId, UUID applicationId) {
+        Integer count = jdbc.queryForObject("""
+                SELECT count(*) FROM application a
+                JOIN project p ON p.id = a.project_id
+                WHERE a.id = ? AND p.org_id = ?
+                """, Integer.class, applicationId, orgId);
+        return count != null && count > 0;
     }
 
     public Optional<String> serviceName(UUID serviceId) {
