@@ -66,8 +66,8 @@ public class DiagnosisService {
      * @return empty when nothing is degraded — an incident with no failures is not an
      *         incident, and opening one would fill the history with noise
      */
-    public Optional<Diagnosis> diagnoseCurrent() {
-        List<RcaStore.DegradedTarget> degraded = store.degradedTargets(degradedBelow);
+    public Optional<Diagnosis> diagnoseCurrent(UUID orgId) {
+        List<RcaStore.DegradedTarget> degraded = store.degradedTargets(orgId, degradedBelow);
         if (degraded.isEmpty()) {
             return Optional.empty();
         }
@@ -79,9 +79,9 @@ public class DiagnosisService {
                 ? degraded.get(0).serviceName() + " degraded"
                 : degraded.size() + " services degraded";
 
-        UUID incidentId = store.open(title, degraded.size());
+        UUID incidentId = store.open(orgId, title, degraded.size());
 
-        return Optional.of(diagnose(incidentId, title, degraded, windowStart, now));
+        return Optional.of(diagnose(orgId, incidentId, title, degraded, windowStart, now));
     }
 
     /**
@@ -91,18 +91,20 @@ public class DiagnosisService {
      * taken against a different implementation from the one that runs in anger would
      * measure the wrong thing.
      */
-    public List<RcaEngine.Verdict> analyseWindow(Instant from, Instant to) {
-        List<RcaStore.DegradedTarget> degraded = store.targetsDegradedDuring(from, to, degradedBelow);
+    public List<RcaEngine.Verdict> analyseWindow(UUID orgId, Instant from, Instant to) {
+        List<RcaStore.DegradedTarget> degraded =
+                store.targetsDegradedDuring(orgId, from, to, degradedBelow);
         if (degraded.isEmpty()) {
             return List.of();
         }
-        return RcaEngine.analyse(graphs.load(), gather(degraded, from, to), from);
+        return RcaEngine.analyse(graphs.load(orgId), gather(degraded, from, to), from);
     }
 
-    private Diagnosis diagnose(UUID incidentId, String title, List<RcaStore.DegradedTarget> degraded,
+    private Diagnosis diagnose(UUID orgId, UUID incidentId, String title,
+                               List<RcaStore.DegradedTarget> degraded,
                                Instant windowStart, Instant now) {
 
-        ServiceGraph graph = graphs.load();
+        ServiceGraph graph = graphs.load(orgId);
         List<RcaEngine.CandidateInput> candidates = gather(degraded, windowStart, now);
         List<RcaEngine.Verdict> verdicts = RcaEngine.analyse(graph, candidates, windowStart);
 
@@ -171,13 +173,14 @@ public class DiagnosisService {
      * would inflate or deflate the number depending on which way the empty case was
      * counted — neither of which measures anything.
      */
-    public RcaEngine.Accuracy measureAccuracy(int limit) {
+    public RcaEngine.Accuracy measureAccuracy(UUID orgId, int limit) {
         List<String> detail = new ArrayList<>();
         int correct = 0;
         int scored = 0;
 
-        for (RcaStore.ChaosGroundTruth truth : store.chaosGroundTruth(limit)) {
-            List<RcaEngine.Verdict> verdicts = analyseWindow(truth.startedAt(), truth.endedAt());
+        for (RcaStore.ChaosGroundTruth truth : store.chaosGroundTruth(orgId, limit)) {
+            List<RcaEngine.Verdict> verdicts =
+                    analyseWindow(orgId, truth.startedAt(), truth.endedAt());
 
             if (verdicts.isEmpty()) {
                 detail.add(String.format("%s (%s): nothing degraded measurably; not scored",

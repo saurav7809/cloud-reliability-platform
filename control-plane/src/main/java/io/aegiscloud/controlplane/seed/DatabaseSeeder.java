@@ -62,6 +62,8 @@ public class DatabaseSeeder implements ApplicationRunner {
         jdbc.update("INSERT INTO app_user (org_id, email, password_hash, role) VALUES (?::uuid,?,?,'ADMIN')",
                 orgId, adminEmail, encoder.encode(adminPassword));
 
+        seedSecondTenant();
+
         seedClusters(orgId);
         seedServices(orgId);
         seedTargets();
@@ -74,6 +76,40 @@ public class DatabaseSeeder implements ApplicationRunner {
     }
 
     /* ------------------------------- clusters ------------------------------- */
+
+    /**
+     * A second organisation with its own admin, one cluster and one service.
+     *
+     * <p>Exists so tenant isolation can be exercised rather than asserted. A
+     * single-tenant database cannot demonstrate that a boundary holds: every query
+     * returns the same rows whether or not the scoping works, so the tests pass
+     * either way. Two tenants make a leak visible the moment it happens.
+     *
+     * <p>Deliberately small. It is a control, not a demo fleet.
+     */
+    private void seedSecondTenant() {
+        String otherOrgId = jdbc.queryForObject(
+                "INSERT INTO organization (name) VALUES ('Northwind Labs') RETURNING id::text",
+                String.class);
+
+        jdbc.update("INSERT INTO app_user (org_id, email, password_hash, role) "
+                        + "VALUES (?::uuid,?,?,'ADMIN')",
+                otherOrgId, "admin@northwind.local", encoder.encode("northwind123"));
+
+        jdbc.update("""
+                INSERT INTO cluster (org_id,name,provider_type,distribution,region,k8s_version,
+                                     status,node_count,is_local)
+                VALUES (?::uuid,'northwind-prod','GCP','GKE','europe-west4','v1.30.2',
+                        'HEALTHY',3,false)
+                """, otherOrgId);
+
+        jdbc.update("""
+                INSERT INTO service (org_id,name,owner_team,description)
+                VALUES (?::uuid,'northwind-billing','Billing','Another tenant''s service')
+                """, otherOrgId);
+
+        log.info("seeded a second organisation so tenant isolation can be tested");
+    }
 
     private void seedClusters(String orgId) {
         record ClusterSeed(String name, String provider, String distribution, String region,

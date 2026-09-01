@@ -1,5 +1,6 @@
 package io.aegiscloud.controlplane.web;
 
+import io.aegiscloud.controlplane.auth.Tenant;
 import io.aegiscloud.controlplane.domain.Models;
 import io.aegiscloud.controlplane.k8s.ClusterConnectivity;
 import io.aegiscloud.controlplane.k8s.DeploymentEngine;
@@ -75,16 +76,17 @@ public class DeploymentController {
             throw ApiException.badRequest("unknown provider: " + request.provider());
         }
 
-        OrganizationEntity owner = organizations.findAll().stream().findFirst()
-                .orElseThrow(() -> ApiException.badRequest("no organization exists to own this cluster"));
+        // The cluster belongs to the caller's organisation, not to whichever
+        // organisation happens to be first in the table.
+        UUID ownerId = Tenant.currentOrgId();
 
-        if (clusters.existsByOrgIdAndName(owner.getId(), request.name())) {
+        if (clusters.existsByOrgIdAndName(ownerId, request.name())) {
             throw new ApiException(HttpStatus.CONFLICT, "CONFLICT",
                     "a cluster named " + request.name() + " is already registered");
         }
 
         ClusterEntity saved = clusters.save(new ClusterEntity(
-                owner.getId(), request.name(), provider, request.distribution(),
+                ownerId, request.name(), provider, request.distribution(),
                 request.region(), request.kubeContext(), request.local()));
 
         ClusterConnectivity probe = engine.probe(saved.getId());
@@ -181,7 +183,7 @@ public class DeploymentController {
             throw ApiException.notFound("service " + request.serviceId() + " not found");
         }
 
-        ClusterEntity cluster = clusters.findByName(request.clusterName())
+        ClusterEntity cluster = clusters.findByOrgIdAndName(Tenant.currentOrgId(), request.clusterName())
                 .orElseThrow(() -> ApiException.notFound(
                         "cluster " + request.clusterName() + " not found"));
 

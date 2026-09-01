@@ -61,6 +61,7 @@ public class TokenManager {
                 .subject(user.id())
                 .claim("email", user.email())
                 .claim("role", user.role().name())
+                .claim("org", user.orgId().toString())
                 .issuedAt(Date.from(now))
                 .expiration(Date.from(now.plus(TTL)))
                 .signWith(key)
@@ -82,10 +83,16 @@ public class TokenManager {
 
             String role = claims.get("role", String.class);
             String email = claims.get("email", String.class);
-            if (role == null || email == null) {
+            String org = claims.get("org", String.class);
+
+            // A token without an organisation is rejected rather than defaulted to
+            // one. Tokens issued before tenancy existed are exactly the case a
+            // default would silently admit into somebody else's data.
+            if (role == null || email == null || org == null) {
                 return null;
             }
-            return new AuthenticatedUser(claims.getSubject(), email, Role.valueOf(role));
+            return new AuthenticatedUser(claims.getSubject(), email, Role.valueOf(role),
+                    java.util.UUID.fromString(org));
         } catch (JwtException | IllegalArgumentException e) {
             return null;
         }

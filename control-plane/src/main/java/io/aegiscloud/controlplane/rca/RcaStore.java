@@ -40,12 +40,14 @@ public class RcaStore {
     }
 
     /** Opens an incident. Returns its id. */
-    public UUID open(String title, int blastRadiusCount) {
+    public UUID open(UUID orgId, String title, int blastRadiusCount) {
+        // The incident belongs to the organisation that raised it, not to whichever
+        // organisation row happens to be oldest.
         return jdbc.queryForObject("""
                 INSERT INTO incident (org_id, title, status, blast_radius_count)
-                SELECT id, ?, 'DIAGNOSING', ? FROM organization ORDER BY created_at LIMIT 1
+                VALUES (?, ?, 'DIAGNOSING', ?)
                 RETURNING id
-                """, UUID.class, title, blastRadiusCount);
+                """, UUID.class, orgId, title, blastRadiusCount);
     }
 
     public void recordRootCause(UUID incidentId, UUID rootCauseTargetId, double confidence) {
@@ -60,13 +62,14 @@ public class RcaStore {
                 incidentId);
     }
 
-    public List<IncidentRow> incidents(int limit) {
+    public List<IncidentRow> incidents(UUID orgId, int limit) {
         return jdbc.query("""
                 SELECT i.id, i.title, i.status, s.name AS root_cause_service, i.confidence,
                        i.blast_radius_count, i.started_at, i.resolved_at
                 FROM incident i
                 LEFT JOIN deployment_target t ON t.id = i.root_cause_target_id
                 LEFT JOIN service s ON s.id = t.service_id
+                WHERE i.org_id = ?
                 ORDER BY i.started_at DESC LIMIT ?
                 """, (rs, n) -> new IncidentRow(
                 UUID.fromString(rs.getString("id")), rs.getString("title"), rs.getString("status"),
@@ -75,11 +78,11 @@ public class RcaStore {
                 rs.getInt("blast_radius_count"),
                 rs.getTimestamp("started_at").toInstant(),
                 rs.getTimestamp("resolved_at") == null
-                        ? null : rs.getTimestamp("resolved_at").toInstant()), limit);
+                        ? null : rs.getTimestamp("resolved_at").toInstant()), orgId, limit);
     }
 
-    public Optional<IncidentRow> incident(UUID id) {
-        return incidents(500).stream().filter(i -> i.id().equals(id)).findFirst();
+    public Optional<IncidentRow> incident(UUID orgId, UUID id) {
+        return incidents(orgId, 500).stream().filter(i -> i.id().equals(id)).findFirst();
     }
 
     // --------------------------------------------------------------- verdicts
@@ -159,7 +162,7 @@ public class RcaStore {
      * <p>A snapshot row, by contrast, exists only because the Evaluation Engine
      * measured something. No measurement, no candidacy.
      */
-    public List<DegradedTarget> degradedTargets(double scoreBelow) {
+    public List<DegradedTarget> degradedTargets(UUID orgId, double scoreBelow) {
         return jdbc.query("""
                 SELECT t.id, t.service_id, s.name AS service_name, t.namespace,
                        c.name AS cluster_name, c.kubeconfig_ref, s.name AS workload,
@@ -172,12 +175,12 @@ public class RcaStore {
                     WHERE snap.target_id = t.id
                     ORDER BY snap.window_end DESC LIMIT 1
                 ) latest ON true
-                WHERE t.is_active AND latest.score < ?
+                WHERE t.is_active AND c.org_id = ? AND latest.score < ?
                 ORDER BY latest.score
                 """, (rs, n) -> new DegradedTarget(
                 UUID.fromString(rs.getString(1)), UUID.fromString(rs.getString(2)),
                 rs.getString(3), rs.getString(4), rs.getString(5), rs.getString(6),
-                rs.getString(7), rs.getDouble(8)), scoreBelow);
+                rs.getString(7), rs.getDouble(8)), orgId, scoreBelow);
     }
 
     /**
@@ -251,7 +254,7 @@ public class RcaStore {
                                    Instant startedAt, Instant endedAt) {
     }
 
-    public List<ChaosGroundTruth> chaosGroundTruth(int limit) {
+    public List<ChaosGroundTruth> chaosGroundTruth(UUID orgId, int limit) {
         return jdbc.query("""
                 SELECT r.id, t.id AS fault_target_id, t.service_id, s.name,
                        r.fault_spec->>'type' AS fault_type, r.started_at, r.ended_at
@@ -268,15 +271,17 @@ public class RcaStore {
                   -- jsonb_exists rather than the ? operator: JDBC parses ? as a
                   -- bind placeholder and the statement fails at prepare time.
                   AND jsonb_exists(r.fault_spec, 'faultTargetId')
+                  AND s.org_id = ?
                 ORDER BY r.started_at DESC LIMIT ?
                 """, (rs, n) -> new ChaosGroundTruth(
                 UUID.fromString(rs.getString(1)), UUID.fromString(rs.getString(2)),
                 UUID.fromString(rs.getString(3)), rs.getString(4), rs.getString(5),
-                rs.getTimestamp(6).toInstant(), rs.getTimestamp(7).toInstant()), limit);
+                rs.getTimestamp(6).toInstant(), rs.getTimestamp(7).toInstant()), orgId, limit);
     }
 
     /** Targets whose score dipped during a given window — the candidates for a past incident. */
-    public List<DegradedTarget> targetsDegradedDuring(Instant from, Instant to, double scoreBelow) {
+    public List<DegradedTarget> targetsDegradedDuring(UUID orgId, Instant from, Instant to,
+                                                      double scoreBelow) {
         return jdbc.query("""
                 SELECT DISTINCT t.id, t.service_id, s.name AS service_name, t.namespace,
                        c.name AS cluster_name, c.kubeconfig_ref, s.name AS workload,
@@ -285,13 +290,13 @@ public class RcaStore {
                 JOIN deployment_target t ON t.id = snap.target_id
                 JOIN service s ON s.id = t.service_id
                 JOIN cluster c ON c.id = t.cluster_id
-                WHERE snap.window_end BETWEEN ? AND ? AND snap.score < ?
+                WHERE snap.window_end BETWEEN ? AND ? AND snap.score < ? AND c.org_id = ?
                 GROUP BY t.id, t.service_id, s.name, t.namespace, c.name, c.kubeconfig_ref
                 """, (rs, n) -> new DegradedTarget(
                 UUID.fromString(rs.getString(1)), UUID.fromString(rs.getString(2)),
                 rs.getString(3), rs.getString(4), rs.getString(5), rs.getString(6),
                 rs.getString(7), rs.getDouble(8)),
-                Timestamp.from(from), Timestamp.from(to), scoreBelow);
+                Timestamp.from(from), Timestamp.from(to), scoreBelow, orgId);
     }
 
     private String toJson(Object value) {

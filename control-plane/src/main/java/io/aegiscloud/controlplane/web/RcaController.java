@@ -1,5 +1,6 @@
 package io.aegiscloud.controlplane.web;
 
+import io.aegiscloud.controlplane.auth.Tenant;
 import io.aegiscloud.controlplane.rca.DiagnosisService;
 import io.aegiscloud.controlplane.rca.RcaEngine;
 import io.aegiscloud.controlplane.rca.RcaStore;
@@ -49,21 +50,21 @@ public class RcaController {
     @PostMapping("/incidents/diagnose")
     @PreAuthorize("hasAnyRole('ADMIN','OPERATOR','VIEWER')")
     public Object diagnose() {
-        return diagnosis.diagnoseCurrent()
+        return diagnosis.diagnoseCurrent(Tenant.currentOrgId())
                 .map(d -> (Object) d)
                 .orElse(Map.of("status", "no service is currently below the degradation threshold"));
     }
 
     @GetMapping("/incidents")
     public List<RcaStore.IncidentRow> incidents(@RequestParam(defaultValue = "50") int limit) {
-        return store.incidents(Math.min(Math.max(limit, 1), 500));
+        return store.incidents(Tenant.currentOrgId(), Math.min(Math.max(limit, 1), 500));
     }
 
     /** One incident with its ranked verdicts and the evidence each cites. */
     @GetMapping("/incidents/{incidentId}")
     public Map<String, Object> incident(@PathVariable String incidentId) {
         UUID id = uuid(incidentId);
-        RcaStore.IncidentRow incident = store.incident(id)
+        RcaStore.IncidentRow incident = store.incident(Tenant.currentOrgId(), id)
                 .orElseThrow(() -> ApiException.notFound("incident " + incidentId + " not found"));
 
         return Map.of("incident", incident, "verdicts", store.verdicts(id));
@@ -107,7 +108,7 @@ public class RcaController {
      */
     @GetMapping("/rca/accuracy")
     public RcaEngine.Accuracy accuracy(@RequestParam(defaultValue = "50") int limit) {
-        return diagnosis.measureAccuracy(Math.min(Math.max(limit, 1), 200));
+        return diagnosis.measureAccuracy(Tenant.currentOrgId(), Math.min(Math.max(limit, 1), 200));
     }
 
     private static UUID uuid(String raw) {

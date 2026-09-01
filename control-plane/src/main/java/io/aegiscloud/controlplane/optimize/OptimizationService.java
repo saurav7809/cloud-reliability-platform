@@ -63,22 +63,27 @@ public class OptimizationService {
             initialDelayString = "${aegiscloud.optimization.initial-delay-ms:45000}",
             fixedDelayString = "${aegiscloud.optimization.interval-ms:3600000}")
     public void scheduledAdvisory() {
-        try {
-            AdvisoryReport report = advise();
-            if (report.recommendations() > 0) {
-                log.info("optimization: {} recommendation(s) across {} target(s), ${} a month",
-                        report.recommendations(), report.targetsExamined(),
-                        Math.round(report.totalMonthlySavingUsd()));
+        // No caller means no organisation to inherit, so the timer iterates them
+        // explicitly. Running as "the first organisation" would advise one tenant
+        // and silently ignore every other.
+        for (UUID orgId : store.organisationIds()) {
+            try {
+                AdvisoryReport report = advise(orgId);
+                if (report.recommendations() > 0) {
+                    log.info("optimization [{}]: {} recommendation(s) across {} target(s), ${} a month",
+                            orgId, report.recommendations(), report.targetsExamined(),
+                            Math.round(report.totalMonthlySavingUsd()));
+                }
+            } catch (Exception e) {
+                log.warn("optimization pass failed for organisation {}: {}", orgId, e.getMessage(), e);
             }
-        } catch (Exception e) {
-            log.warn("optimization pass failed: {}", e.getMessage(), e);
         }
     }
 
     /** Examines every active target and refreshes the open recommendations. */
-    public AdvisoryReport advise() {
+    public AdvisoryReport advise(UUID orgId) {
         List<String> findings = new ArrayList<>();
-        List<RecommendationStore.TargetRow> targets = store.targetFacts();
+        List<RecommendationStore.TargetRow> targets = store.targetFacts(orgId);
 
         int produced = 0;
         int withheld = 0;
@@ -151,8 +156,8 @@ public class OptimizationService {
      * governs autonomous scaling. A recommendation is not a licence — the operator
      * agreeing with it does not make it within policy.
      */
-    public ApplyResult apply(UUID recommendationId, UUID actor) {
-        RecommendationStore.RecommendationRow recommendation = store.recommendation(recommendationId)
+    public ApplyResult apply(UUID orgId, UUID recommendationId, UUID actor) {
+        RecommendationStore.RecommendationRow recommendation = store.recommendation(orgId, recommendationId)
                 .orElseThrow(() -> new IllegalArgumentException(
                         "no such recommendation: " + recommendationId));
 
@@ -212,8 +217,8 @@ public class OptimizationService {
     }
 
     /** Dismisses advice, with the reason kept so bad advice stays visible (FR-34). */
-    public ApplyResult dismiss(UUID recommendationId, UUID actor, String reason) {
-        RecommendationStore.RecommendationRow recommendation = store.recommendation(recommendationId)
+    public ApplyResult dismiss(UUID orgId, UUID recommendationId, UUID actor, String reason) {
+        RecommendationStore.RecommendationRow recommendation = store.recommendation(orgId, recommendationId)
                 .orElseThrow(() -> new IllegalArgumentException(
                         "no such recommendation: " + recommendationId));
 

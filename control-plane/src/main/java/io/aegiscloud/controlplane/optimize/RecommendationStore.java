@@ -33,7 +33,7 @@ public class RecommendationStore {
      * numbers for targets nothing has ever probed, and advising on a fixture is worse
      * than saying nothing.
      */
-    public List<TargetRow> targetFacts() {
+    public List<TargetRow> targetFacts(UUID orgId) {
         return jdbc.query("""
                 SELECT t.id::text            AS target_id,
                        s.name                AS service_name,
@@ -60,7 +60,7 @@ public class RecommendationStore {
                 FROM deployment_target t
                 JOIN service s ON s.id = t.service_id
                 JOIN cluster c ON c.id = t.cluster_id
-                WHERE t.is_active AND c.is_active
+                WHERE t.is_active AND c.is_active AND c.org_id = ?
                 ORDER BY s.name
                 """, (rs, i) -> new TargetRow(
                 rs.getString("target_id"), rs.getString("service_name"),
@@ -69,7 +69,15 @@ public class RecommendationStore {
                 rs.getInt("replicas"), rs.getDouble("monthly_cost"),
                 Models.ScalingStrategy.valueOf(rs.getString("scaling_strategy")),
                 rs.getBoolean("has_latency_slo"), rs.getInt("sample_count"),
-                optional(rs, "score"), optional(rs, "budget_remaining")));
+                optional(rs, "score"), optional(rs, "budget_remaining")), orgId);
+    }
+
+    /**
+     * Every organisation, for the engines that run on a timer and therefore have no
+     * caller to inherit a tenant from.
+     */
+    public List<UUID> organisationIds() {
+        return jdbc.queryForList("SELECT id FROM organization ORDER BY created_at", UUID.class);
     }
 
     private static OptionalDouble optional(java.sql.ResultSet rs, String column)
@@ -155,16 +163,18 @@ public class RecommendationStore {
             JOIN cluster c ON c.id = t.cluster_id
             """;
 
-    public List<RecommendationRow> recommendations(String status, int limit) {
+    public List<RecommendationRow> recommendations(UUID orgId, String status, int limit) {
         // Assembled with explicit newlines rather than by concatenating text blocks:
         // a block ends where its content ends, so "WHERE true" and "ORDER BY" ran
         // together into one unparseable token.
         String sql = RECOMMENDATION_SELECT
-                + (status == null ? "WHERE true " : "WHERE r.status = ? ")
+                + "WHERE c.org_id = ? "
+                + (status == null ? "" : "AND r.status = ? ")
                 + "ORDER BY r.estimated_monthly_saving_usd DESC, r.created_at DESC "
                 + "LIMIT ?";
 
-        Object[] args = status == null ? new Object[]{limit} : new Object[]{status, limit};
+        Object[] args = status == null
+                ? new Object[]{orgId, limit} : new Object[]{orgId, status, limit};
 
         return jdbc.query(sql, (rs, i) -> new RecommendationRow(
                 UUID.fromString(rs.getString("id")), rs.getString(2), rs.getString("service_name"),
@@ -177,8 +187,8 @@ public class RecommendationStore {
                         ? null : rs.getTimestamp("applied_at").toInstant()), args);
     }
 
-    public Optional<RecommendationRow> recommendation(UUID id) {
-        return jdbc.query(RECOMMENDATION_SELECT + "WHERE r.id = ?",
+    public Optional<RecommendationRow> recommendation(UUID orgId, UUID id) {
+        return jdbc.query(RECOMMENDATION_SELECT + "WHERE r.id = ? AND c.org_id = ?",
                 (rs, i) -> new RecommendationRow(
                 UUID.fromString(rs.getString("id")), rs.getString(2), rs.getString("service_name"),
                 rs.getString("cluster_name"), rs.getString("kind"), rs.getString("title"),
@@ -187,7 +197,7 @@ public class RecommendationStore {
                 rs.getString("status"), rs.getString("outcome"),
                 rs.getTimestamp("created_at").toInstant(),
                 rs.getTimestamp("applied_at") == null
-                        ? null : rs.getTimestamp("applied_at").toInstant()), id)
+                        ? null : rs.getTimestamp("applied_at").toInstant()), id, orgId)
                 .stream().findFirst();
     }
 
@@ -201,8 +211,8 @@ public class RecommendationStore {
     }
 
     /** The target behind a recommendation, for applying it. */
-    public Optional<TargetRow> targetOf(UUID recommendationId) {
-        return recommendation(recommendationId).flatMap(row -> targetFacts().stream()
+    public Optional<TargetRow> targetOf(UUID orgId, UUID recommendationId) {
+        return recommendation(orgId, recommendationId).flatMap(row -> targetFacts(orgId).stream()
                 .filter(t -> t.targetId().equals(row.targetId()))
                 .findFirst());
     }

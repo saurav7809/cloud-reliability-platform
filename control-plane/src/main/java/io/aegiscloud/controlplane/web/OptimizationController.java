@@ -1,6 +1,7 @@
 package io.aegiscloud.controlplane.web;
 
 import io.aegiscloud.controlplane.auth.CurrentUser;
+import io.aegiscloud.controlplane.auth.Tenant;
 import io.aegiscloud.controlplane.optimize.OptimizationService;
 import io.aegiscloud.controlplane.optimize.RecommendationStore;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -51,21 +52,21 @@ public class OptimizationController {
             throw ApiException.badRequest("unknown status: " + status);
         }
 
-        return store.recommendations(normalised, Math.min(Math.max(limit, 1), 500));
+        return store.recommendations(Tenant.currentOrgId(), normalised, Math.min(Math.max(limit, 1), 500));
     }
 
     /** Re-examines every target now and refreshes the open recommendations. */
     @PostMapping("/recommendations/refresh")
     @PreAuthorize("hasAnyRole('ADMIN','OPERATOR')")
     public OptimizationService.AdvisoryReport refresh() {
-        return optimization.advise();
+        return optimization.advise(Tenant.currentOrgId());
     }
 
     @PostMapping("/recommendations/{id}/apply")
     @PreAuthorize("hasAnyRole('ADMIN','OPERATOR')")
     public OptimizationService.ApplyResult apply(@PathVariable String id) {
         try {
-            return optimization.apply(uuid(id), UUID.fromString(CurrentUser.get().id()));
+            return optimization.apply(Tenant.currentOrgId(), uuid(id), UUID.fromString(CurrentUser.get().id()));
         } catch (IllegalArgumentException e) {
             throw ApiException.notFound(e.getMessage());
         } catch (IllegalStateException e) {
@@ -81,7 +82,7 @@ public class OptimizationController {
     public OptimizationService.ApplyResult dismiss(@PathVariable String id,
                                                    @RequestBody(required = false) DismissRequest request) {
         try {
-            return optimization.dismiss(uuid(id), UUID.fromString(CurrentUser.get().id()),
+            return optimization.dismiss(Tenant.currentOrgId(), uuid(id), UUID.fromString(CurrentUser.get().id()),
                     request == null ? null : request.reason());
         } catch (IllegalArgumentException e) {
             throw ApiException.notFound(e.getMessage());
@@ -99,7 +100,7 @@ public class OptimizationController {
      */
     @GetMapping("/recommendations/summary")
     public Map<String, Object> summary() {
-        List<RecommendationStore.RecommendationRow> open = store.recommendations("OPEN", 500);
+        List<RecommendationStore.RecommendationRow> open = store.recommendations(Tenant.currentOrgId(), "OPEN", 500);
 
         double safeSaving = open.stream().filter(RecommendationStore.RecommendationRow::safeToApply)
                 .mapToDouble(RecommendationStore.RecommendationRow::estimatedMonthlySavingUsd)

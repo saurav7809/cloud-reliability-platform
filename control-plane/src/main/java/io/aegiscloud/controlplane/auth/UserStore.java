@@ -39,8 +39,10 @@ public class UserStore {
         }
 
         List<Row> rows = jdbc.query(
-                "SELECT id::text, password_hash, role FROM app_user WHERE lower(email) = lower(?)",
-                (rs, n) -> new Row(rs.getString(1), rs.getString(2), rs.getString(3)),
+                "SELECT id::text, password_hash, role, org_id::text FROM app_user "
+                        + "WHERE lower(email) = lower(?)",
+                (rs, n) -> new Row(rs.getString(1), rs.getString(2), rs.getString(3),
+                        rs.getString(4)),
                 email);
 
         if (rows.isEmpty()) {
@@ -52,9 +54,10 @@ public class UserStore {
         if (!encoder.matches(password, row.hash())) {
             return null;
         }
-        return new AuthenticatedUser(row.id(), email, Role.valueOf(row.role()));
+        return new AuthenticatedUser(row.id(), email, Role.valueOf(row.role()),
+                java.util.UUID.fromString(row.orgId()));
     }
 
-    private record Row(String id, String hash, String role) {
+    private record Row(String id, String hash, String role, String orgId) {
     }
 }

@@ -35,7 +35,7 @@ foundational design.
 | 7 — Dependency & Propagation (service graph, blast radius, SPOF, critical path) | ✅ done |
 | 8 — Root Cause Analysis (multi-signal correlation, explainable verdicts, measured accuracy) | ✅ done |
 | 9 — Optimization Advisor (cost + performance advice that never trades reliability silently) | ✅ done |
-| 10 — Multi-Cloud & Hardening (real EKS/AKS/GKE, multi-tenancy, production) | planned |
+| 10 — Multi-Cloud & Hardening (enforced multi-tenancy, cloud-agnostic boundary guarded by tests) | ✅ done |
 
 Phases 7 and 8 are deliberately late: a dependency graph needs real telemetry flowing (Phase 5),
 and RCA needs the chaos engine (Phase 6) to supply incidents whose true cause is known in advance
@@ -147,6 +147,67 @@ Six screens over the platform API, styled as a dark operator console:
 > client-go. The dashboard says so on its Overview screen rather than implying live data.
 
 ## Verified So Far
+
+### Phase 10 — Multi-Cloud & Hardening
+
+**Multi-tenancy is now enforced, not reserved.** The `org_id` columns existed from
+Phase 1 and nothing used them: any authenticated user could read every organisation's
+clusters, services, graph, incidents and recommendations. The organisation is now part
+of the JWT identity and part of every tenant-facing query.
+
+Verified with two real tenants in the same database:
+
+```
+tenant                clusters                      services   graph        incidents
+AegisCloud            4 (incl. aegiscloud-local)    15         15 svc/19 e  1
+Northwind Labs        1 (northwind-prod)            1          1 svc/0 e    0
+```
+
+And with tenant B holding tenant A's genuine ids:
+
+```
+POST /alerts/{A's alert}/acknowledge   as B -> 404      as A -> 200
+GET  /services/{A's service}/blast-radius  as B -> 404
+GET  /incidents/{A's incident}             as B -> 404  as A -> 200
+```
+
+Four decisions worth stating:
+
+- **Scoping lives in the SQL**, not in a filter applied to results. Filtering
+  afterwards means the wrong rows were already fetched and already counted in an
+  aggregate, one forgotten line away from being returned.
+- **A cross-tenant id returns 404, not 403.** Telling a caller that an id exists but
+  is not theirs confirms the id.
+- **A token with no organisation is rejected** rather than defaulted to one. Tokens
+  issued before tenancy existed are exactly what a default would admit.
+- **The overview cache key carries the organisation.** A single shared key would have
+  served one tenant's rollup to another for the length of the TTL — the quietest
+  possible leak, since every individual query was scoped correctly.
+
+Engines that run on a timer have no caller and therefore no tenant; the optimization
+advisor now iterates organisations explicitly rather than running as whichever one
+happened to be first.
+
+**The cloud-agnostic boundary is guarded by tests, not by intent.** Three checks fail
+the build if the central architectural claim is broken: no cloud provider SDK is
+imported anywhere, no engine branches on which provider a cluster belongs to, and
+Kubernetes clients are built only by `KubernetesClientFactory`. This is the honest
+form of "multi-cloud" available without cloud accounts: EKS, AKS and GKE differ from
+the kind cluster by a kubeconfig context and a label, and now nothing can quietly make
+them differ by more.
+
+**Also fixed:** the operator console was lying about the platform's own state — the
+engine-status panel still reported the Deployment Engine as `NOT_IMPLEMENTED` and
+telemetry as "arrives in Phase 5", six phases after both shipped. Statuses are now
+derived from what each engine has actually recorded, per organisation, and the RCA and
+Optimization engines were added to the list.
+
+**Not done, and not claimed:** no EKS, AKS or GKE cluster has been registered, because
+that needs cloud accounts this machine does not have. What is verified is that
+registration takes any kubeconfig context and that no code path distinguishes one
+provider from another.
+
+
 
 ### Phase 9 — Optimization Advisor
 

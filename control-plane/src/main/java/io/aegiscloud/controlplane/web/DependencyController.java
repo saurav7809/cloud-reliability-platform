@@ -1,5 +1,6 @@
 package io.aegiscloud.controlplane.web;
 
+import io.aegiscloud.controlplane.auth.Tenant;
 import io.aegiscloud.controlplane.graph.GraphStore;
 import io.aegiscloud.controlplane.graph.ServiceGraph;
 import jakarta.validation.Valid;
@@ -52,12 +53,12 @@ public class DependencyController {
 
     @GetMapping("/graph")
     public GraphView graph() {
-        ServiceGraph graph = store.load();
+        ServiceGraph graph = store.load(Tenant.currentOrgId());
 
         return new GraphView(
                 graph.serviceCount(),
                 graph.edgeCount(),
-                store.edgeRows(),
+                store.edgeRows(Tenant.currentOrgId()),
                 graph.entryPoints().stream().map(graph::nameOf).toList(),
                 graph.isolatedServices().stream().map(graph::nameOf).toList(),
                 graph.criticalPathNames(),
@@ -86,9 +87,13 @@ public class DependencyController {
         UUID caller = uuid(request.callerServiceId());
         UUID callee = uuid(request.calleeServiceId());
 
-        store.serviceName(caller).orElseThrow(() ->
+        // Both endpoints must belong to the caller's organisation. Declaring an
+        // edge to a service in another tenant would let one organisation write into
+        // another's graph, and blast radius is computed from that graph.
+        UUID orgId = Tenant.currentOrgId();
+        store.serviceName(orgId, caller).orElseThrow(() ->
                 ApiException.notFound("service " + caller + " not found"));
-        store.serviceName(callee).orElseThrow(() ->
+        store.serviceName(orgId, callee).orElseThrow(() ->
                 ApiException.notFound("service " + callee + " not found"));
 
         try {
@@ -98,7 +103,7 @@ public class DependencyController {
             throw ApiException.badRequest(e.getMessage());
         }
 
-        return store.edgeRows().stream()
+        return store.edgeRows(Tenant.currentOrgId()).stream()
                 .filter(e -> e.callerServiceId().equals(caller.toString())
                         && e.calleeServiceId().equals(callee.toString()))
                 .findFirst()
@@ -119,7 +124,7 @@ public class DependencyController {
     /** What breaks when this service does (FR-24). */
     @GetMapping("/services/{serviceId}/blast-radius")
     public ServiceGraph.BlastRadius blastRadius(@PathVariable String serviceId) {
-        ServiceGraph graph = store.load();
+        ServiceGraph graph = store.load(Tenant.currentOrgId());
         String id = uuid(serviceId).toString();
 
         if (!graph.contains(id)) {
@@ -131,7 +136,7 @@ public class DependencyController {
     /** Where this service sits: who calls it, what it calls, how much depends on it. */
     @GetMapping("/services/{serviceId}/position")
     public ServiceGraph.ServicePosition position(@PathVariable String serviceId) {
-        ServiceGraph graph = store.load();
+        ServiceGraph graph = store.load(Tenant.currentOrgId());
         String id = uuid(serviceId).toString();
 
         if (!graph.contains(id)) {
@@ -151,15 +156,15 @@ public class DependencyController {
      */
     @GetMapping("/graph/correlate")
     public ServiceGraph.Correlation correlate(@RequestParam(defaultValue = "80") double scoreBelow) {
-        ServiceGraph graph = store.load();
-        Set<String> degraded = Set.copyOf(store.degradedServiceIds(scoreBelow));
+        ServiceGraph graph = store.load(Tenant.currentOrgId());
+        Set<String> degraded = Set.copyOf(store.degradedServiceIds(Tenant.currentOrgId(), scoreBelow));
         return graph.correlate(degraded);
     }
 
     /** Cyclic dependencies, which break the assumptions every other answer here rests on. */
     @GetMapping("/graph/cycles")
     public List<List<String>> cycles() {
-        ServiceGraph graph = store.load();
+        ServiceGraph graph = store.load(Tenant.currentOrgId());
         return graph.cycles().stream()
                 .map(cycle -> cycle.stream().map(graph::nameOf).toList())
                 .toList();

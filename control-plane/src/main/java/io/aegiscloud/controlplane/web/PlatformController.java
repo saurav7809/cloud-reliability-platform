@@ -1,5 +1,6 @@
 package io.aegiscloud.controlplane.web;
 
+import io.aegiscloud.controlplane.auth.Tenant;
 import io.aegiscloud.controlplane.domain.Models;
 import io.aegiscloud.controlplane.store.PlatformStore;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -25,52 +26,52 @@ public class PlatformController {
 
     @GetMapping("/overview")
     public Models.Overview overview() {
-        return store.overview();
+        return store.overview(Tenant.currentOrgId());
     }
 
     @GetMapping("/clusters")
     public List<Models.Cluster> clusters() {
-        return store.clusters();
+        return store.clusters(Tenant.currentOrgId());
     }
 
     @GetMapping("/services")
     public List<Models.Service> services() {
-        return store.services();
+        return store.services(Tenant.currentOrgId());
     }
 
     @GetMapping("/targets")
     public List<Models.DeploymentTarget> targets() {
-        return store.targets();
+        return store.targets(Tenant.currentOrgId());
     }
 
     @GetMapping("/slos")
     public List<Models.Slo> slos() {
-        return store.slos();
+        return store.slos(Tenant.currentOrgId());
     }
 
     @GetMapping("/policies")
     public List<Models.Policy> policies() {
-        return store.policies();
+        return store.policies(Tenant.currentOrgId());
     }
 
     @GetMapping("/control-plane/scaling-events")
     public List<Models.ScalingEvent> scalingEvents() {
-        return store.scalingEvents();
+        return store.scalingEvents(Tenant.currentOrgId());
     }
 
     @GetMapping("/control-plane/healing-events")
     public List<Models.HealingEvent> healingEvents() {
-        return store.healingEvents();
+        return store.healingEvents(Tenant.currentOrgId());
     }
 
     @GetMapping("/experiment-runs")
     public List<Models.ExperimentRun> experiments() {
-        return store.experiments();
+        return store.experiments(Tenant.currentOrgId());
     }
 
     @GetMapping("/alerts")
     public List<Models.Alert> alerts() {
-        return store.alerts();
+        return store.alerts(Tenant.currentOrgId());
     }
 
     /*
@@ -92,7 +93,7 @@ public class PlatformController {
     }
 
     private Map<String, String> setStatus(String alertId, Models.AlertStatus status) {
-        if (!store.setAlertStatus(alertId, status)) {
+        if (!store.setAlertStatus(Tenant.currentOrgId(), alertId, status)) {
             throw ApiException.notFound("alert " + alertId + " not found");
         }
         return Map.of("id", alertId, "status", status.name());

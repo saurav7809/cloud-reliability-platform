@@ -20,29 +20,38 @@ public class GraphStore {
         this.jdbc = jdbc;
     }
 
-    /** Every service, whether or not it has edges — an unconnected service is still a node. */
-    public Map<String, String> serviceNames() {
+    /** Every service in one organisation — an unconnected service is still a node. */
+    public Map<String, String> serviceNames(UUID orgId) {
         Map<String, String> names = new LinkedHashMap<>();
-        jdbc.query("SELECT id::text, name FROM service ORDER BY name",
+        jdbc.query("SELECT id::text, name FROM service WHERE org_id = ? ORDER BY name",
                 rs -> {
                     names.put(rs.getString(1), rs.getString(2));
-                });
+                }, orgId);
         return names;
     }
 
-    public List<ServiceGraph.Edge> edges() {
+    /**
+     * Edges within one organisation.
+     *
+     * <p>Both endpoints are checked, not just one. An edge is only meaningful when
+     * the graph holds both services, and checking a single end would admit a
+     * half-edge pointing at a service the caller cannot see.
+     */
+    public List<ServiceGraph.Edge> edges(UUID orgId) {
         return jdbc.query("""
-                SELECT caller_service_id::text, callee_service_id::text, discovery_source,
-                       call_rate_per_min, error_rate_pct, latency_p95_ms
-                FROM service_dependency
+                SELECT d.caller_service_id::text, d.callee_service_id::text, d.discovery_source,
+                       d.call_rate_per_min, d.error_rate_pct, d.latency_p95_ms
+                FROM service_dependency d
+                JOIN service caller ON caller.id = d.caller_service_id AND caller.org_id = ?
+                JOIN service callee ON callee.id = d.callee_service_id AND callee.org_id = ?
                 """, (rs, i) -> new ServiceGraph.Edge(
                 rs.getString(1), rs.getString(2), rs.getString(3),
-                rs.getDouble(4), rs.getDouble(5), rs.getDouble(6)));
+                rs.getDouble(4), rs.getDouble(5), rs.getDouble(6)), orgId, orgId);
     }
 
-    /** Builds a snapshot of the whole graph. */
-    public ServiceGraph load() {
-        return new ServiceGraph(serviceNames(), edges());
+    /** Builds a snapshot of one organisation's graph. */
+    public ServiceGraph load(UUID orgId) {
+        return new ServiceGraph(serviceNames(orgId), edges(orgId));
     }
 
     /**
@@ -82,6 +91,14 @@ public class GraphStore {
                 caller, callee);
     }
 
+    /** A service name, only when the service belongs to this organisation. */
+    public Optional<String> serviceName(UUID orgId, UUID serviceId) {
+        return jdbc.queryForList("SELECT name FROM service WHERE id = ? AND org_id = ?",
+                        String.class, serviceId, orgId)
+                .stream().findFirst();
+    }
+
+    /** Unscoped lookup, for the engines that run without a caller. */
     public Optional<String> serviceName(UUID serviceId) {
         return jdbc.queryForList("SELECT name FROM service WHERE id = ?", String.class, serviceId)
                 .stream().findFirst();
@@ -99,7 +116,7 @@ public class GraphStore {
     }
 
     /** Edges with both service names resolved, for the API and the dashboard. */
-    public List<EdgeRow> edgeRows() {
+    public List<EdgeRow> edgeRows(UUID orgId) {
         return jdbc.query("""
                 SELECT d.caller_service_id::text, caller.name, d.callee_service_id::text, callee.name,
                        d.discovery_source, d.call_rate_per_min, d.error_rate_pct, d.latency_p95_ms,
@@ -107,11 +124,12 @@ public class GraphStore {
                 FROM service_dependency d
                 JOIN service caller ON caller.id = d.caller_service_id
                 JOIN service callee ON callee.id = d.callee_service_id
+                WHERE caller.org_id = ? AND callee.org_id = ?
                 ORDER BY caller.name, callee.name
                 """, (rs, i) -> new EdgeRow(
                 rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4),
                 rs.getString(5), rs.getDouble(6), rs.getDouble(7), rs.getDouble(8),
-                rs.getTimestamp(9).toInstant()));
+                rs.getTimestamp(9).toInstant()), orgId, orgId);
     }
 
     /**
@@ -120,11 +138,13 @@ public class GraphStore {
      * <p>The input to graph correlation: which services are unhappy right now, so the
      * graph can be asked which of them explains the others.
      */
-    public List<String> degradedServiceIds(double scoreBelow) {
+    public List<String> degradedServiceIds(UUID orgId, double scoreBelow) {
         return jdbc.queryForList("""
                 SELECT DISTINCT t.service_id::text
                 FROM deployment_target t
-                WHERE t.is_active AND t.reliability_score > 0 AND t.reliability_score < ?
-                """, String.class, scoreBelow);
+                JOIN cluster c ON c.id = t.cluster_id
+                WHERE t.is_active AND c.org_id = ?
+                  AND t.reliability_score > 0 AND t.reliability_score < ?
+                """, String.class, orgId, scoreBelow);
     }
 }

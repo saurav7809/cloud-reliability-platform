@@ -16,6 +16,7 @@ import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.UUID;
 import java.util.Map;
 
 /**
@@ -45,12 +46,12 @@ public class PlatformStore {
 
     /* ------------------------------- registry ------------------------------- */
 
-    public List<Models.Cluster> clusters() {
+    public List<Models.Cluster> clusters(UUID orgId) {
         return jdbc.query("""
                 SELECT id::text, name, provider_type, COALESCE(distribution,''), COALESCE(region,''),
                        status, node_count, COALESCE(k8s_version,''), is_local
-                FROM cluster WHERE is_active ORDER BY is_local DESC, name
-                """, CLUSTER_MAPPER);
+                FROM cluster WHERE is_active AND org_id = ? ORDER BY is_local DESC, name
+                """, CLUSTER_MAPPER, orgId);
     }
 
     private static final RowMapper<Models.Cluster> CLUSTER_MAPPER = (rs, n) -> new Models.Cluster(
@@ -64,19 +65,19 @@ public class PlatformStore {
             rs.getString(8),
             rs.getBoolean(9));
 
-    public List<Models.Service> services() {
+    public List<Models.Service> services(UUID orgId) {
         return jdbc.query("""
                 SELECT id::text, name, COALESCE(owner_team,''), COALESCE(description,''), tags::text
-                FROM service ORDER BY name
+                FROM service WHERE org_id = ? ORDER BY name
                 """, (rs, n) -> new Models.Service(
                 rs.getString(1),
                 rs.getString(2),
                 rs.getString(3),
                 rs.getString(4),
-                readStringMap(rs.getString(5))));
+                readStringMap(rs.getString(5))), orgId);
     }
 
-    public List<Models.DeploymentTarget> targets() {
+    public List<Models.DeploymentTarget> targets(UUID orgId) {
         return jdbc.query("""
                 SELECT t.id::text, t.service_id::text, sv.name, t.cluster_id::text, c.name, c.provider_type,
                        COALESCE(c.region,''), t.namespace, t.scaling_strategy, t.deployment_status,
@@ -85,7 +86,7 @@ public class PlatformStore {
                 FROM deployment_target t
                 JOIN service sv ON sv.id = t.service_id
                 JOIN cluster c  ON c.id  = t.cluster_id
-                WHERE t.is_active
+                WHERE t.is_active AND c.org_id = ?
                 ORDER BY sv.name, c.name
                 """, (rs, n) -> new Models.DeploymentTarget(
                 rs.getString(1),
@@ -104,7 +105,7 @@ public class PlatformStore {
                 rs.getDouble(14),
                 rs.getDouble(15),
                 rs.getDouble(16),
-                rs.getDouble(17)));
+                rs.getDouble(17)), orgId);
     }
 
     /* ------------------------------ objectives ------------------------------ */
@@ -114,7 +115,7 @@ public class PlatformStore {
      * subquery, so objective and current burn state arrive in one round trip
      * instead of one query per SLO.
      */
-    public List<Models.Slo> slos() {
+    public List<Models.Slo> slos(UUID orgId) {
         return jdbc.query("""
                 SELECT s.id::text, s.target_id::text, sv.name || ' @ ' || c.name, s.sli_type,
                        s.objective_value, s.window_days, COALESCE(b.current_value,0),
@@ -128,7 +129,7 @@ public class PlatformStore {
                     FROM error_budget_snapshot
                     WHERE slo_id = s.id ORDER BY computed_at DESC LIMIT 1
                 ) b ON true
-                WHERE s.is_active
+                WHERE s.is_active AND c.org_id = ?
                 ORDER BY b.burn_rate DESC NULLS LAST
                 """, (rs, n) -> new Models.Slo(
                 rs.getString(1),
@@ -139,16 +140,16 @@ public class PlatformStore {
                 rs.getInt(6),
                 rs.getDouble(7),
                 rs.getDouble(8),
-                rs.getDouble(9)));
+                rs.getDouble(9)), orgId);
     }
 
     /* ---------------------------- control plane ----------------------------- */
 
-    public List<Models.ScalingEvent> scalingEvents() {
-        return scalingEvents(50);
+    public List<Models.ScalingEvent> scalingEvents(UUID orgId) {
+        return scalingEvents(orgId, 50);
     }
 
-    public List<Models.ScalingEvent> scalingEvents(int limit) {
+    public List<Models.ScalingEvent> scalingEvents(UUID orgId, int limit) {
         return jdbc.query("""
                 SELECT e.id::text, e.target_id::text, sv.name || ' @ ' || c.name, e.previous_replicas,
                        e.new_replicas, e.trigger_metric, e.trigger_value, e.strategy, e.decided_at
@@ -156,6 +157,7 @@ public class PlatformStore {
                 JOIN deployment_target t ON t.id = e.target_id
                 JOIN service sv ON sv.id = t.service_id
                 JOIN cluster c  ON c.id  = t.cluster_id
+                WHERE c.org_id = ?
                 ORDER BY e.decided_at DESC LIMIT ?
                 """, (rs, n) -> new Models.ScalingEvent(
                 rs.getString(1),
@@ -166,14 +168,14 @@ public class PlatformStore {
                 rs.getString(6),
                 rs.getDouble(7),
                 Models.ScalingStrategy.valueOf(rs.getString(8)),
-                instant(rs, 9)), limit);
+                instant(rs, 9)), orgId, limit);
     }
 
-    public List<Models.HealingEvent> healingEvents() {
-        return healingEvents(50);
+    public List<Models.HealingEvent> healingEvents(UUID orgId) {
+        return healingEvents(orgId, 50);
     }
 
-    public List<Models.HealingEvent> healingEvents(int limit) {
+    public List<Models.HealingEvent> healingEvents(UUID orgId, int limit) {
         return jdbc.query("""
                 SELECT h.id::text, h.target_id::text, sv.name || ' @ ' || c.name, h.pod_name, h.reason,
                        h.action_taken, h.detected_at, h.resolved_at
@@ -181,6 +183,7 @@ public class PlatformStore {
                 JOIN deployment_target t ON t.id = h.target_id
                 JOIN service sv ON sv.id = t.service_id
                 JOIN cluster c  ON c.id  = t.cluster_id
+                WHERE c.org_id = ?
                 ORDER BY h.detected_at DESC LIMIT ?
                 """, (rs, n) -> new Models.HealingEvent(
                 rs.getString(1),
@@ -190,14 +193,14 @@ public class PlatformStore {
                 rs.getString(5),
                 rs.getString(6),
                 instant(rs, 7),
-                instant(rs, 8)), limit);
+                instant(rs, 8)), orgId, limit);
     }
 
-    public List<Models.Policy> policies() {
+    public List<Models.Policy> policies(UUID orgId) {
         return jdbc.query("""
                 SELECT p.id::text, p.cluster_id::text, c.name, p.max_replicas,
                        p.max_concurrent_experiments, p.protected_namespaces::text
-                FROM policy p JOIN cluster c ON c.id = p.cluster_id
+                FROM policy p JOIN cluster c ON c.id = p.cluster_id AND c.org_id = ?
                 ORDER BY c.name
                 """, (rs, n) -> new Models.Policy(
                 rs.getString(1),
@@ -205,12 +208,12 @@ public class PlatformStore {
                 rs.getString(3),
                 rs.getInt(4),
                 rs.getInt(5),
-                readStringList(rs.getString(6))));
+                readStringList(rs.getString(6))), orgId);
     }
 
     /* -------------------------------- alerts -------------------------------- */
 
-    public List<Models.Alert> alerts() {
+    public List<Models.Alert> alerts(UUID orgId) {
         return jdbc.query("""
                 SELECT a.id::text, a.target_id::text, sv.name || ' @ ' || c.name, a.severity, a.status,
                        a.message, a.opened_at
@@ -218,6 +221,7 @@ public class PlatformStore {
                 JOIN deployment_target t ON t.id = a.target_id
                 JOIN service sv ON sv.id = t.service_id
                 JOIN cluster c  ON c.id  = t.cluster_id
+                WHERE c.org_id = ?
                 ORDER BY a.opened_at DESC
                 """, (rs, n) -> new Models.Alert(
                 rs.getString(1),
@@ -226,7 +230,7 @@ public class PlatformStore {
                 Models.AlertSeverity.valueOf(rs.getString(4)),
                 Models.AlertStatus.valueOf(rs.getString(5)),
                 rs.getString(6),
-                instant(rs, 7)));
+                instant(rs, 7)), orgId);
     }
 
     /**
@@ -238,24 +242,36 @@ public class PlatformStore {
      * cannot raise before the query runs — a bad id must read as "not found", not
      * as a server error.
      */
-    public boolean setAlertStatus(String alertId, Models.AlertStatus status) {
+    public boolean setAlertStatus(UUID orgId, String alertId, Models.AlertStatus status) {
+        // The organisation is part of the WHERE clause, not a check performed
+        // beforehand. A read-then-write would leave a window in which the alert
+        // moved organisations, and more practically it is one refactor away from
+        // somebody dropping the check while keeping the update.
         int updated = jdbc.update("""
                 UPDATE alert SET status = ?,
                        acknowledged_at = CASE WHEN ? = 'ACKNOWLEDGED' THEN now() ELSE acknowledged_at END,
                        resolved_at     = CASE WHEN ? = 'RESOLVED'     THEN now() ELSE resolved_at END
                 WHERE id::text = ?
-                """, status.name(), status.name(), status.name(), alertId);
+                  AND target_id IN (
+                      SELECT t.id FROM deployment_target t
+                      JOIN cluster c ON c.id = t.cluster_id
+                      WHERE c.org_id = ?
+                  )
+                """, status.name(), status.name(), status.name(), alertId, orgId);
 
         if (updated == 0) {
+            // Another organisation's alert is reported as not found rather than as
+            // forbidden: telling a caller that an id exists but is not theirs
+            // confirms the id, which is information they should not have.
             return false;
         }
-        cache.invalidate(OVERVIEW_CACHE_KEY);
+        cache.invalidate(OVERVIEW_CACHE_KEY + ":" + orgId);
         return true;
     }
 
     /* ------------------------------ experiments ----------------------------- */
 
-    public List<Models.ExperimentRun> experiments() {
+    public List<Models.ExperimentRun> experiments(UUID orgId) {
         return jdbc.query("""
                 SELECT r.id::text, sv.name, COALESCE(c.name,''), r.run_type,
                        COALESCE(r.fault_spec->>'type',''), r.status,
@@ -265,6 +281,7 @@ public class PlatformStore {
                 JOIN service sv ON sv.id = r.service_id
                 LEFT JOIN deployment_target t ON t.id = r.target_id
                 LEFT JOIN cluster c ON c.id = t.cluster_id
+                WHERE sv.org_id = ?
                 ORDER BY r.started_at DESC LIMIT 50
                 """, (rs, n) -> new Models.ExperimentRun(
                 rs.getString(1),
@@ -277,7 +294,7 @@ public class PlatformStore {
                 rs.getDouble(8),
                 rs.getDouble(9),
                 instant(rs, 10),
-                instant(rs, 11)));
+                instant(rs, 11)), orgId);
     }
 
     /* ------------------------------- overview ------------------------------- */
@@ -286,54 +303,68 @@ public class PlatformStore {
      * The dashboard rollup: the most expensive read in the API, so it is cached in
      * Redis for a short window and invalidated on mutation.
      */
-    public Models.Overview overview() {
-        Models.Overview cached = cache.get(OVERVIEW_CACHE_KEY, Models.Overview.class);
+    public Models.Overview overview(UUID orgId) {
+        // The cache key carries the organisation. A single shared key would serve
+        // one tenant's rollup to another for the length of the TTL - the quietest
+        // possible way to leak data, since every individual query is scoped
+        // correctly and nothing in the logs would look wrong.
+        String cacheKey = OVERVIEW_CACHE_KEY + ":" + orgId;
+
+        Models.Overview cached = cache.get(cacheKey, Models.Overview.class);
         if (cached != null) {
             return cached.withCacheHit(true);
         }
 
-        Models.Overview fresh = computeOverview();
-        cache.set(OVERVIEW_CACHE_KEY, fresh, OVERVIEW_TTL);
+        Models.Overview fresh = computeOverview(orgId);
+        cache.set(cacheKey, fresh, OVERVIEW_TTL);
         return fresh;
     }
 
-    private Models.Overview computeOverview() {
+    private Models.Overview computeOverview(UUID orgId) {
         Totals totals = jdbc.queryForObject("""
-                SELECT (SELECT count(*) FROM cluster WHERE is_active),
-                       (SELECT count(*) FROM cluster WHERE is_active AND status = 'HEALTHY'),
-                       (SELECT count(*) FROM service),
-                       (SELECT count(*) FROM deployment_target WHERE is_active),
-                       (SELECT COALESCE(sum(replicas),0) FROM deployment_target WHERE is_active),
-                       (SELECT count(*) FROM alert WHERE status = 'OPEN'),
-                       (SELECT COALESCE(round(avg(reliability_score)::numeric,1),0) FROM deployment_target WHERE is_active),
-                       (SELECT COALESCE(sum(monthly_cost_usd),0) FROM deployment_target WHERE is_active)
+                WITH org_target AS (
+                    SELECT t.* FROM deployment_target t
+                    JOIN cluster c ON c.id = t.cluster_id
+                    WHERE t.is_active AND c.org_id = ?
+                )
+                SELECT (SELECT count(*) FROM cluster WHERE is_active AND org_id = ?),
+                       (SELECT count(*) FROM cluster
+                         WHERE is_active AND status = 'HEALTHY' AND org_id = ?),
+                       (SELECT count(*) FROM service WHERE org_id = ?),
+                       (SELECT count(*) FROM org_target),
+                       (SELECT COALESCE(sum(replicas),0) FROM org_target),
+                       (SELECT count(*) FROM alert a JOIN org_target ot ON ot.id = a.target_id
+                         WHERE a.status = 'OPEN'),
+                       (SELECT COALESCE(round(avg(reliability_score)::numeric,1),0) FROM org_target),
+                       (SELECT COALESCE(sum(monthly_cost_usd),0) FROM org_target)
                 """, (rs, n) -> new Totals(
                 rs.getInt(1), rs.getInt(2), rs.getInt(3), rs.getInt(4),
-                rs.getInt(5), rs.getInt(6), rs.getDouble(7), rs.getDouble(8)));
+                rs.getInt(5), rs.getInt(6), rs.getDouble(7), rs.getDouble(8)),
+                orgId, orgId, orgId, orgId);
 
         List<Models.ProviderScore> byProvider = jdbc.query("""
                 SELECT c.provider_type, round(avg(t.reliability_score)::numeric,1), count(*),
                        COALESCE(sum(t.monthly_cost_usd),0)
                 FROM deployment_target t JOIN cluster c ON c.id = t.cluster_id
-                WHERE t.is_active
+                WHERE t.is_active AND c.org_id = ?
                 GROUP BY c.provider_type ORDER BY 2 DESC
                 """, (rs, n) -> new Models.ProviderScore(
                 Models.ProviderType.valueOf(rs.getString(1)),
                 rs.getDouble(2),
                 rs.getInt(3),
-                rs.getDouble(4)));
+                rs.getDouble(4)), orgId);
 
-        List<Models.ScalingEvent> recentScaling = scalingEvents(4);
-        List<Models.HealingEvent> recentHealing = healingEvents(3);
+        List<Models.ScalingEvent> recentScaling = scalingEvents(orgId, 4);
+        List<Models.HealingEvent> recentHealing = healingEvents(orgId, 3);
 
         return new Models.Overview(
                 totals.clusters(), totals.healthyClusters(), totals.services(), totals.targets(),
                 totals.replicas(), totals.openAlerts(), totals.avgScore(), totals.monthlyCost(),
                 byProvider,
-                scoreTrend(),
+                scoreTrend(orgId),
                 recentScaling,
                 recentHealing,
-                engineStatus(),
+                engineStatus(orgId),
                 observabilitySources(),
                 false);
     }
@@ -347,17 +378,19 @@ public class PlatformStore {
      * indistinguishable from a real one, which is exactly the confusion a
      * reliability platform cannot afford.
      */
-    private List<Models.ScorePoint> scoreTrend() {
+    private List<Models.ScorePoint> scoreTrend(UUID orgId) {
         return jdbc.query("""
                 SELECT to_char(day, 'Mon DD'), round(score::numeric, 1)
                 FROM (
-                    SELECT date_trunc('day', window_end) AS day, avg(score) AS score
-                    FROM reliability_score_snapshot
-                    WHERE window_end >= now() - INTERVAL '14 days'
+                    SELECT date_trunc('day', snap.window_end) AS day, avg(snap.score) AS score
+                    FROM reliability_score_snapshot snap
+                    JOIN deployment_target t ON t.id = snap.target_id
+                    JOIN cluster c ON c.id = t.cluster_id
+                    WHERE snap.window_end >= now() - INTERVAL '14 days' AND c.org_id = ?
                     GROUP BY 1
                 ) daily
                 ORDER BY day
-                """, (rs, n) -> new Models.ScorePoint(rs.getString(1), rs.getDouble(2)));
+                """, (rs, n) -> new Models.ScorePoint(rs.getString(1), rs.getDouble(2)), orgId);
     }
 
     /**
@@ -369,20 +402,57 @@ public class PlatformStore {
      * about the platform's own health, which is a strange property for the thing
      * whose job is telling you when something is wrong.
      */
-    private List<Models.EngineStatus> engineStatus() {
-        int scaling = count("SELECT count(*) FROM scaling_event WHERE decided_at > now() - INTERVAL '24 hours'");
-        int healing = count("SELECT count(*) FROM healing_event WHERE detected_at > now() - INTERVAL '24 hours'");
-        int experiments = count("SELECT count(*) FROM evaluation_run WHERE started_at > now() - INTERVAL '24 hours'");
-        int samples = count("SELECT count(*) FROM metric_sample WHERE sampled_at > now() - INTERVAL '24 hours'");
-        int policies = count("SELECT count(*) FROM policy");
+    private List<Models.EngineStatus> engineStatus(UUID orgId) {
+        int scaling = countForOrg("""
+                SELECT count(*) FROM scaling_event e
+                JOIN deployment_target t ON t.id = e.target_id
+                JOIN cluster c ON c.id = t.cluster_id
+                WHERE e.decided_at > now() - INTERVAL '24 hours' AND c.org_id = ?
+                """, orgId);
+        int healing = countForOrg("""
+                SELECT count(*) FROM healing_event h
+                JOIN deployment_target t ON t.id = h.target_id
+                JOIN cluster c ON c.id = t.cluster_id
+                WHERE h.detected_at > now() - INTERVAL '24 hours' AND c.org_id = ?
+                """, orgId);
+        int experiments = countForOrg("""
+                SELECT count(*) FROM evaluation_run r
+                JOIN service s ON s.id = r.service_id
+                WHERE r.run_type = 'CHAOS' AND r.started_at > now() - INTERVAL '24 hours'
+                  AND s.org_id = ?
+                """, orgId);
+        int samples = countForOrg("""
+                SELECT count(*) FROM metric_sample m
+                JOIN deployment_target t ON t.id = m.target_id
+                JOIN cluster c ON c.id = t.cluster_id
+                WHERE m.sampled_at > now() - INTERVAL '24 hours' AND c.org_id = ?
+                """, orgId);
+        int policies = countForOrg("""
+                SELECT count(*) FROM policy p
+                JOIN cluster c ON c.id = p.cluster_id
+                WHERE c.org_id = ?
+                """, orgId);
+        int reachableClusters = countForOrg("""
+                SELECT count(*) FROM cluster
+                WHERE is_active AND org_id = ? AND status <> 'UNREACHABLE'
+                """, orgId);
+        int verdicts = countForOrg("""
+                SELECT count(*) FROM rca_verdict v
+                JOIN deployment_target t ON t.id = v.candidate_target_id
+                JOIN cluster c ON c.id = t.cluster_id
+                WHERE v.created_at > now() - INTERVAL '24 hours' AND c.org_id = ?
+                """, orgId);
+        int recommendations = countForOrg("""
+                SELECT count(*) FROM recommendation r
+                JOIN deployment_target t ON t.id = r.target_id
+                JOIN cluster c ON c.id = t.cluster_id
+                WHERE r.status = 'OPEN' AND c.org_id = ?
+                """, orgId);
 
         return List.of(
-                // Cluster rows carry a status column, but nothing has yet contacted a
-                // Kubernetes API to populate it. Reporting that stored value as live
-                // reachability would be a claim this engine cannot support, so it
-                // reports its real state until the connectivity probe exists.
-                new Models.EngineStatus("Deployment Engine", "NOT_IMPLEMENTED",
-                        "Cluster connectivity is not yet probed", 0),
+                new Models.EngineStatus("Deployment Engine",
+                        reachableClusters > 0 ? "ACTIVE" : "IDLE",
+                        reachableClusters + " cluster(s) reachable", reachableClusters),
                 new Models.EngineStatus("Auto-Scaling",
                         scaling > 0 ? "ACTIVE" : "IDLE", "Scaling decisions recorded", scaling),
                 new Models.EngineStatus("Self-Healing",
@@ -391,10 +461,20 @@ public class PlatformStore {
                         policies > 0 ? "ENFORCING" : "UNCONFIGURED",
                         policies + " cluster guardrail(s) configured", policies),
                 new Models.EngineStatus("Evaluation Engine",
-                        samples > 0 ? "ACTIVE" : "NOT_IMPLEMENTED",
-                        "Telemetry ingestion arrives in Phase 5", samples),
+                        samples > 0 ? "ACTIVE" : "IDLE",
+                        "Probe samples recorded", samples),
                 new Models.EngineStatus("Experiment Engine",
-                        experiments > 0 ? "ACTIVE" : "IDLE", "Chaos runs recorded", experiments));
+                        experiments > 0 ? "ACTIVE" : "IDLE", "Chaos runs recorded", experiments),
+                new Models.EngineStatus("Root Cause Analysis",
+                        verdicts > 0 ? "ACTIVE" : "IDLE", "Verdicts produced", verdicts),
+                new Models.EngineStatus("Optimization Advisor",
+                        recommendations > 0 ? "ACTIVE" : "IDLE",
+                        "Open recommendations", recommendations));
+    }
+
+    private int countForOrg(String sql, UUID orgId) {
+        Integer count = jdbc.queryForObject(sql, Integer.class, orgId);
+        return count == null ? 0 : count;
     }
 
     /**
