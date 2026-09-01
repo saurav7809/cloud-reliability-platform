@@ -2,10 +2,12 @@ package io.aegiscloud.controlplane.k8s;
 
 import io.aegiscloud.controlplane.persistence.ClusterEntity;
 import io.aegiscloud.controlplane.persistence.ClusterRepository;
+import io.fabric8.kubernetes.api.model.EnvVar;
 import io.fabric8.kubernetes.api.model.Namespace;
 import io.fabric8.kubernetes.api.model.NamespaceBuilder;
 import io.fabric8.kubernetes.api.model.Node;
 import io.fabric8.kubernetes.api.model.NodeCondition;
+import io.fabric8.kubernetes.api.model.ServiceBuilder;
 import io.fabric8.kubernetes.api.model.apps.Deployment;
 import io.fabric8.kubernetes.api.model.apps.DeploymentBuilder;
 import io.fabric8.kubernetes.client.KubernetesClient;
@@ -148,6 +150,18 @@ public class DeploymentEngine {
      */
     public DeploymentOutcome deploy(String clusterName, String namespace, String workloadName,
                                     String image, int replicas, int containerPort, boolean adopt) {
+        return deploy(clusterName, namespace, workloadName, image, replicas, containerPort,
+                adopt, Map.of());
+    }
+
+    /**
+     * @param env environment for the container. This is how a service is told where
+     *            its dependencies live, and without it the platform can only deploy
+     *            workloads that need no configuration - which is to say, almost none.
+     */
+    public DeploymentOutcome deploy(String clusterName, String namespace, String workloadName,
+                                    String image, int replicas, int containerPort, boolean adopt,
+                                    Map<String, String> env) {
 
         ClusterEntity cluster = clusters.findByName(clusterName)
                 .orElseThrow(() -> new IllegalArgumentException("no such cluster: " + clusterName));
@@ -170,7 +184,8 @@ public class DeploymentEngine {
                                 + "AegisCloud. Re-send with adopt=true to take ownership of it.");
             }
 
-            Deployment deployment = buildDeployment(namespace, workloadName, image, replicas, containerPort);
+            Deployment deployment = buildDeployment(namespace, workloadName, image, replicas,
+                    containerPort, env);
 
             if (existing != null && !isManagedByPlatform(existing)) {
                 // Adoption replaces the spec outright rather than merging into it,
@@ -187,6 +202,12 @@ public class DeploymentEngine {
                         .forceConflicts()
                         .serverSideApply();
             }
+
+            // A Deployment alone is unreachable. Without a Service there is no DNS
+            // name for another workload to call and no stable address for the
+            // platform to probe through the API server, so the two are created
+            // together or the rollout has not really happened.
+            ensureService(client, namespace, workloadName, containerPort);
 
             Deployment applied = client.apps().deployments()
                     .inNamespace(namespace).withName(workloadName).get();
@@ -257,8 +278,40 @@ public class DeploymentEngine {
         log.info("created namespace {}", namespace);
     }
 
+    /**
+     * Creates or updates the ClusterIP Service in front of a workload.
+     *
+     * <p>Port 80 to the container port, matching the convention the rest of the
+     * platform probes with ({@code k8s://namespace/service:80/path}).
+     */
+    private void ensureService(KubernetesClient client, String namespace, String name,
+                               int containerPort) {
+        io.fabric8.kubernetes.api.model.Service service = new ServiceBuilder()
+                .withNewMetadata()
+                .withName(name)
+                .withNamespace(namespace)
+                .addToLabels(MANAGED_BY_LABEL, MANAGED_BY_VALUE)
+                .addToLabels("app", name)
+                .endMetadata()
+                .withNewSpec()
+                .withType("ClusterIP")
+                .addToSelector("app", name)
+                .addNewPort()
+                .withName("http")
+                .withPort(80)
+                .withNewTargetPort(containerPort)
+                .withProtocol("TCP")
+                .endPort()
+                .endSpec()
+                .build();
+
+        client.services().inNamespace(namespace).resource(service)
+                .forceConflicts().serverSideApply();
+    }
+
     private Deployment buildDeployment(String namespace, String name, String image,
-                                       int replicas, int containerPort) {
+                                       int replicas, int containerPort,
+                                       Map<String, String> env) {
         Map<String, String> selector = Map.of("app", name);
 
         return new DeploymentBuilder()
@@ -277,6 +330,7 @@ public class DeploymentEngine {
                 .addNewContainer()
                 .withName(name)
                 .withImage(image)
+                .withEnv(environment(name, env))
                 .addNewPort().withContainerPort(containerPort).endPort()
                 .withNewResources()
                 .addToRequests("cpu", new io.fabric8.kubernetes.api.model.Quantity(DEFAULT_CPU_REQUEST))
@@ -295,6 +349,25 @@ public class DeploymentEngine {
                 .endTemplate()
                 .endSpec()
                 .build();
+    }
+
+    /**
+     * The container's environment.
+     *
+     * <p>SERVICE_NAME is always set from the workload name so a service knows what
+     * it is called without anyone having to remember to pass it; anything the caller
+     * supplies wins over that default.
+     */
+    private static List<EnvVar> environment(String workloadName, Map<String, String> env) {
+        Map<String, String> merged = new java.util.LinkedHashMap<>();
+        merged.put("SERVICE_NAME", workloadName);
+        if (env != null) {
+            merged.putAll(env);
+        }
+
+        return merged.entrySet().stream()
+                .map(entry -> new EnvVar(entry.getKey(), entry.getValue(), null))
+                .toList();
     }
 
     /** Kubernetes failures nest several layers deep; the innermost message is the useful one. */

@@ -14,13 +14,16 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"math/rand"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -45,7 +48,68 @@ type state struct {
 var (
 	st          = &state{startedAt: time.Now()}
 	serviceName = envOr("SERVICE_NAME", "sample-service")
+
+	// The services this one calls to do its work, read from DEPENDENCIES as
+	// "name=url,name=url". Real calls, not a declared list: the platform's
+	// dependency graph is only worth trusting if the edges exist in the traffic.
+	dependencies = parseDependencies(envOr("DEPENDENCIES", ""))
+
+	// One client for the process. A client per request leaks connections and
+	// makes every call pay for a fresh handshake, which would show up in the
+	// platform's latency measurements as this service's own slowness.
+	depClient = &http.Client{Timeout: 2 * time.Second}
 )
+
+type dependency struct {
+	name string
+	url  string
+}
+
+func parseDependencies(raw string) []dependency {
+	var deps []dependency
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		name, url, ok := strings.Cut(entry, "=")
+		if !ok || strings.TrimSpace(url) == "" {
+			log.Printf("ignoring malformed dependency %q; expected name=url", entry)
+			continue
+		}
+		deps = append(deps, dependency{name: strings.TrimSpace(name), url: strings.TrimSpace(url)})
+	}
+	return deps
+}
+
+// callDependencies asks every dependency to do its work, and reports the first
+// that fails.
+//
+// Sequential rather than parallel, deliberately: latency then adds up the way it
+// does in a real request path, so a slow leaf service shows as slowness in
+// everything above it. That propagation is exactly what the platform's blast
+// radius and RCA claim to detect, and a parallel fan-out would hide it behind
+// the slowest single call.
+func callDependencies(ctx context.Context) (string, error) {
+	for _, dep := range dependencies {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, dep.url+"/api/work", nil)
+		if err != nil {
+			return dep.name, err
+		}
+
+		response, err := depClient.Do(request)
+		if err != nil {
+			return dep.name, err
+		}
+		io.Copy(io.Discard, response.Body)
+		response.Body.Close()
+
+		if response.StatusCode >= 500 {
+			return dep.name, fmt.Errorf("%s returned %d", dep.name, response.StatusCode)
+		}
+	}
+	return "", nil
+}
 
 func main() {
 	port := envOr("PORT", "8080")
@@ -72,6 +136,9 @@ func main() {
 	mux.HandleFunc("/chaos/reset", handleReset)
 	mux.HandleFunc("/", handleRoot)
 
+	if len(dependencies) > 0 {
+		log.Printf("%s depends on %v", serviceName, dependencyNames())
+	}
 	log.Printf("%s listening on :%s", serviceName, port)
 	if err := http.ListenAndServe(":"+port, mux); err != nil {
 		log.Fatal(err)
@@ -108,8 +175,9 @@ func instrument(next http.HandlerFunc) http.HandlerFunc {
 
 func handleRoot(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"service": serviceName,
-		"uptime":  time.Since(st.startedAt).Round(time.Second).String(),
+		"service":      serviceName,
+		"uptime":       time.Since(st.startedAt).Round(time.Second).String(),
+		"dependencies": dependencyNames(),
 		"endpoints": []string{
 			"GET  /healthz",
 			"GET  /metrics",
@@ -146,22 +214,52 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 // handleWork burns CPU for the requested duration, which is what drives a
 // CPU-based Auto-Scaling strategy to add replicas.
 func handleWork(w http.ResponseWriter, r *http.Request) {
-	ms := intParam(r, "cpu", 50)
-	if ms > 5000 {
-		ms = 5000 // keep a stray request from pinning a core on a 1-node kind cluster
-	}
-
-	deadline := time.Now().Add(time.Duration(ms) * time.Millisecond)
-	var acc float64
-	for time.Now().Before(deadline) {
-		for i := 0; i < 20000; i++ {
-			acc += math.Sqrt(float64(i))
+	// Dependencies first. A service that cannot reach what it needs has not done
+	// the work, and reporting success would make every downstream failure
+	// invisible to the platform measuring it.
+	if len(dependencies) > 0 {
+		if failed, err := callDependencies(r.Context()); err != nil {
+			st.errors.Add(1)
+			log.Printf("dependency %s failed: %v", failed, err)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"service":    serviceName,
+				"error":      "DEPENDENCY_UNAVAILABLE",
+				"dependency": failed,
+				"detail":     err.Error(),
+			})
+			return
 		}
 	}
 
+	// Optional CPU burn, so a target can be pushed into a scaling decision.
+	if ms := intParam(r, "cpu", 0); ms > 0 {
+		burnCPU(time.Duration(ms) * time.Millisecond)
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"service": serviceName, "cpuMs": ms, "checksum": int64(acc) % 1000,
+		"service":      serviceName,
+		"dependencies": dependencyNames(),
+		"servedAt":     time.Now().UTC().Format(time.RFC3339Nano),
 	})
+}
+
+func dependencyNames() []string {
+	names := make([]string, 0, len(dependencies))
+	for _, dep := range dependencies {
+		names = append(names, dep.name)
+	}
+	return names
+}
+
+// burnCPU spins for the requested duration. Kept from the original workload:
+// a control plane that scales on CPU needs something that can actually consume it.
+func burnCPU(d time.Duration) {
+	deadline := time.Now().Add(d)
+	x := 0.0
+	for time.Now().Before(deadline) {
+		x += math.Sqrt(rand.Float64())
+	}
+	_ = x
 }
 
 func handleLatency(w http.ResponseWriter, r *http.Request) {

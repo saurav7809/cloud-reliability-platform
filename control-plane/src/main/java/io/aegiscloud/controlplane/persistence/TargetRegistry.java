@@ -24,6 +24,25 @@ public class TargetRegistry {
         this.jdbc = jdbc;
     }
 
+    /**
+     * Creates a service, or returns the existing one with that name.
+     *
+     * <p>Idempotent on (organisation, name) because the schema already declares that
+     * pair unique: declaring the same service twice is a repeat of one statement,
+     * not a second service.
+     */
+    public UUID createService(UUID orgId, String name, String description, String ownerTeam) {
+        return jdbc.queryForObject("""
+                INSERT INTO service (org_id, name, description, owner_team)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT (org_id, name) DO UPDATE SET
+                    description = COALESCE(EXCLUDED.description, service.description),
+                    owner_team = COALESCE(EXCLUDED.owner_team, service.owner_team),
+                    updated_at = now()
+                RETURNING id
+                """, UUID.class, orgId, name, description, ownerTeam);
+    }
+
     public Optional<String> serviceName(UUID serviceId) {
         return jdbc.queryForList("SELECT name FROM service WHERE id = ?", String.class, serviceId)
                 .stream().findFirst();

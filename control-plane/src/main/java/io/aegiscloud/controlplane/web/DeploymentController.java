@@ -146,7 +146,8 @@ public class DeploymentController {
             @NotBlank String image,
             @Min(0) int replicas,
             @Min(1) int containerPort,
-            boolean adopt) {
+            boolean adopt,
+            java.util.Map<String, String> env) {
     }
 
     @PostMapping("/deployments")
@@ -155,12 +156,14 @@ public class DeploymentController {
         try {
             DeploymentEngine.DeploymentOutcome outcome = engine.deploy(
                     request.cluster(), request.namespace(), request.workload(),
-                    request.image(), request.replicas(), request.containerPort(), request.adopt());
+                    request.image(), request.replicas(), request.containerPort(), request.adopt(),
+                    request.env() == null ? java.util.Map.of() : request.env());
 
             audit.recordUserAction("DEPLOY_WORKLOAD", "workload",
                     request.namespace() + "/" + request.workload(),
                     java.util.Map.of("cluster", request.cluster(), "image", request.image(),
                             "replicas", request.replicas(), "adopted", request.adopt(),
+                            "env", request.env() == null ? java.util.Map.of() : request.env(),
                             "succeeded", outcome.succeeded(), "detail", outcome.detail()));
 
             return outcome;
@@ -178,6 +181,33 @@ public class DeploymentController {
      * all four work from {@code deployment_target} rows. This is what puts a workload
      * under management.
      */
+    public record CreateServiceRequest(@NotBlank String name, String description,
+                                       String ownerTeam) {
+    }
+
+    /**
+     * Declares a service.
+     *
+     * <p>A service is the thing the platform reasons about: SLOs, graph edges, RCA
+     * verdicts and recommendations all hang off it, and it exists independently of
+     * any one deployment of it. Until now a service could only appear through
+     * repository discovery or the seeder, which meant a workload deployed by hand
+     * could never be managed.
+     */
+    @PostMapping("/services")
+    @PreAuthorize("hasAnyRole('ADMIN','OPERATOR')")
+    public java.util.Map<String, String> createService(
+            @RequestBody CreateServiceRequest request) {
+
+        UUID id = targets.createService(Tenant.currentOrgId(), request.name(),
+                request.description(), request.ownerTeam());
+
+        audit.recordUserAction("CREATE_SERVICE", "service", id.toString(),
+                java.util.Map.of("name", request.name()));
+
+        return java.util.Map.of("id", id.toString(), "name", request.name());
+    }
+
     public record RegisterTargetRequest(
             @NotBlank String serviceId,
             @NotBlank String clusterName,
