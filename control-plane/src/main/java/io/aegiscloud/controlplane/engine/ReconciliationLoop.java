@@ -325,6 +325,17 @@ public class ReconciliationLoop {
     // ---------------------------------------------------------------- scaling
 
     private Tally scale(ManagedTarget target, WorkloadObservation observation, List<String> decisions) {
+        // Autoscaling a target that is under experiment is wrong in both directions:
+        // it fights the injected fault, and it makes the experiment's result
+        // unreadable, since the replica count no longer reflects only what the
+        // experiment did. Healing is deliberately left running - a pod that fails
+        // for an unrelated reason during a run still deserves to be fixed.
+        if (store.experimentRunning(target.targetId())) {
+            note(decisions, target.label(),
+                    "scaling paused: a chaos experiment is running on this target");
+            return Tally.NONE;
+        }
+
         PolicyLimits limits = store.limitsFor(target.clusterId());
 
         List<Double> trend = store.recentLatency(target.targetId(), 12);
@@ -430,6 +441,19 @@ public class ReconciliationLoop {
                 continue;
             }
             ManagedTarget target = maybeTarget.get();
+
+            // A chaos experiment degrades the service on purpose. Judging an action
+            // across one measures the experiment, not the action - and acting on
+            // that judgement is how a correct scale-down gets rolled back because
+            // chaos happened to be running at the time.
+            if (store.experimentOverlapped(pending.targetId(), pending.executedAt())) {
+                store.recordInconclusive(pending.id(),
+                        "verification inconclusive: a chaos experiment overlapped this window");
+                decisions.add(target.label() + ": verification of " + pending.actionType()
+                        + " discarded, a chaos experiment overlapped the window");
+                verified++;
+                continue;
+            }
 
             WorkloadObservation now =
                     workloads.observe(target.kubeContext(), target.namespace(), target.workload());

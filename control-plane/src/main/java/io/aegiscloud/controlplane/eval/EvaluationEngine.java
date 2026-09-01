@@ -99,6 +99,50 @@ public class EvaluationEngine {
         return report;
     }
 
+    /**
+     * Probes one target now and returns the score those measurements produce.
+     *
+     * <p>Exists for the Experiment Engine, which has to know what a target's
+     * reliability was immediately before a fault, during it, and after recovery.
+     * Reading the last scheduled score would blur those three moments together.
+     */
+    public OptionalDouble measureTarget(UUID targetId) {
+        List<EvaluationStore.ProbeEndpoint> endpoints = store.activeEndpoints().stream()
+                .filter(e -> e.targetId().equals(targetId))
+                .toList();
+
+        if (endpoints.isEmpty()) {
+            return OptionalDouble.empty();
+        }
+
+        probeAll(endpoints, new ArrayList<>());
+        return scoreFromRecentSamples(targetId);
+    }
+
+    /**
+     * The score implied by the samples already collected for a target, without
+     * probing again.
+     */
+    private OptionalDouble scoreFromRecentSamples(UUID targetId) {
+        List<SloEvaluator.Sample> availability = store.samples(targetId, "AVAILABILITY", 1);
+        if (availability.isEmpty()) {
+            return OptionalDouble.empty();
+        }
+
+        List<SloEvaluator.Sample> latency = store.samples(targetId, "LATENCY_MS", 1);
+        double availabilityPct = availability.stream().filter(SloEvaluator.Sample::success).count()
+                * 100.0 / availability.size();
+
+        ReliabilityScore.Result result = ReliabilityScore.compute(new ReliabilityScore.Inputs(
+                OptionalDouble.of(availabilityPct),
+                latency.isEmpty() ? OptionalDouble.empty()
+                        : OptionalDouble.of(SloEvaluator.percentile(latency, 95)),
+                latencyObjective(targetId),
+                OptionalDouble.of(100 - availabilityPct)));
+
+        return result.score();
+    }
+
     // ------------------------------------------------------------------ probes
 
     private int probeAll(List<EvaluationStore.ProbeEndpoint> endpoints, List<String> observations) {

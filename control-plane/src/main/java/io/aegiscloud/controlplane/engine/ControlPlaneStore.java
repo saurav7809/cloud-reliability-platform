@@ -309,6 +309,52 @@ public class ControlPlaneStore {
                 rs.getTimestamp("executed_at").toInstant()));
     }
 
+    /**
+     * Whether a chaos experiment was running on this target at any point since the
+     * given instant.
+     *
+     * <p>Used to disqualify a verification rather than to prevent one. An experiment
+     * deliberately degrades the service, so any readiness change measured across one
+     * cannot be attributed to the platform's own action - and attributing it anyway
+     * is how a correct scale-down gets rolled back because chaos was running at the
+     * time.
+     */
+    public boolean experimentOverlapped(UUID targetId, Instant since) {
+        Integer count = jdbc.queryForObject("""
+                SELECT count(*) FROM evaluation_run
+                WHERE target_id = ? AND run_type = 'CHAOS'
+                  AND (ended_at IS NULL OR ended_at > ?)
+                  AND status <> 'REJECTED_BY_POLICY'
+                """, Integer.class, targetId, Timestamp.from(since));
+        return count != null && count > 0;
+    }
+
+    /** Whether a chaos experiment is in flight on this target right now. */
+    public boolean experimentRunning(UUID targetId) {
+        Integer count = jdbc.queryForObject("""
+                SELECT count(*) FROM evaluation_run
+                WHERE target_id = ? AND run_type = 'CHAOS' AND status = 'RUNNING'
+                """, Integer.class, targetId);
+        return count != null && count > 0;
+    }
+
+    /**
+     * Closes out an action whose effect cannot be judged, with the reason appended to
+     * what the engine concluded at the time.
+     *
+     * <p>Recorded as NO_CHANGE because that is what the platform knows: not that the
+     * action was harmless, but that nothing can be concluded from this window.
+     */
+    public void recordInconclusive(UUID actionId, String reason) {
+        jdbc.update("""
+                UPDATE autonomous_action
+                SET outcome = 'NO_CHANGE',
+                    concluded = concluded || ' — ' || ?,
+                    verified_at = now()
+                WHERE id = ?
+                """, reason, actionId);
+    }
+
     public void recordOutcome(UUID actionId, String outcome, double scoreAfter) {
         jdbc.update("""
                 UPDATE autonomous_action

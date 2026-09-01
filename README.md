@@ -31,7 +31,7 @@ foundational design.
 | 3 — Deployment Engine (fabric8 Kubernetes client, cluster registration, PostgreSQL) | ✅ done |
 | 4 — Control Plane (Auto-Scaling, Self-Healing, Policy Engine, autonomy levels, live event stream) | ✅ done |
 | 5 — Evaluation Engine (synthetic probes, SLO evaluation, error budgets, reliability scoring) | ✅ done |
-| 6 — Experiment Engine (chaos — also the ground truth for measuring RCA) | planned |
+| 6 — Experiment Engine (chaos, safety rules, steady-state hypothesis, always restores) | ✅ done |
 | 7 — Dependency & Propagation (service graph, blast radius, SPOF) | planned |
 | 8 — Root Cause Analysis (multi-signal correlation, explainable verdicts) | planned |
 | 9 — Optimization Advisor (cost + performance recommendations) | planned |
@@ -147,6 +147,50 @@ Six screens over the platform API, styled as a dark operator console:
 > client-go. The dashboard says so on its Overview screen rather than implying live data.
 
 ## Verified So Far
+
+### Phase 6 — Experiment Engine
+
+Break something on purpose, measure what happened, put it back. Observed against the
+kind cluster:
+
+**Safety refuses before anything is broken**
+- `POD_KILL` of 3 of 3 replicas: *"exceeds the 50% blast-radius limit (at most 1)"*.
+- A 3600s run: *"exceeds the 900s maximum: a fault left injected longer than that
+  cannot be reliably undone by hand if the platform dies mid-run"*.
+- Both refusals are recorded as `REJECTED_BY_POLICY` runs with their reason, so a
+  request that was declined is as visible as one that ran.
+
+**A run that completes**
+- `REPLICA_LOSS`: replicas went 3 → 2 → 3, hypothesis held, score 90.7 → 90.8 → 91.4,
+  and the fault spec records exactly what was injected and that it was restored.
+- `POD_KILL`: one pod deleted, *"nothing to restore: the ReplicaSet recreates deleted
+  pods"*, score 92.2 → 92.3 → 92.8.
+
+**A run that aborts itself**
+- With an abort threshold of 99.9 against a real score of 91.7, a run requested for
+  300s ended after **0.6s**: *"steady-state hypothesis broken"* — and restored.
+
+**Two bugs the first real run exposed, both now fixed**
+
+The control loop and the Experiment Engine were each unaware of the other:
+
+1. The loop scaled down, an experiment then reduced readiness, and the loop's
+   verification blamed **its own action** and rolled back a correct decision.
+   Verification now discards any window a chaos run overlapped:
+   *"verification inconclusive: a chaos experiment overlapped this window"*.
+2. The loop kept autoscaling a target that was under experiment, fighting the
+   injected fault and making the result unreadable. Scaling now pauses for a target
+   with a run in flight: *"scaling paused: a chaos experiment is running on this
+   target"*. Healing deliberately keeps running — a pod that fails for an unrelated
+   reason still deserves fixing.
+
+**What is deliberately not implemented.** Network latency, packet loss, partitions and
+in-container CPU/memory pressure need a privileged node agent — that is what Chaos
+Mesh installs. They are left unimplemented rather than approximated, because
+restarting a pod is not a network partition, and Phase 8's RCA will be scored against
+these experiments' recorded causes.
+
+
 
 ### Real-time detection (Kubernetes watches)
 
