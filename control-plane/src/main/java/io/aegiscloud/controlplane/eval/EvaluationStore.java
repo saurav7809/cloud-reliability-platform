@@ -80,13 +80,27 @@ public class EvaluationStore {
                         ? null : rs.getInt("expected_status_code")));
     }
 
-    /** Registers an endpoint against a target. Returns its id. */
+    /**
+     * Registers an endpoint, or updates the one already at that address.
+     *
+     * <p>Idempotent on (target, address). Registering a service twice used to add a
+     * second endpoint pointing at the same URL, which doubled the probe rate against
+     * the workload and made availability a function of how many times somebody
+     * pressed Register.
+     */
     public UUID addEndpoint(UUID targetId, String protocol, String address, int probeIntervalSeconds,
                             int timeoutMs, Integer expectedStatusCode) {
         return jdbc.queryForObject("""
                 INSERT INTO endpoint (target_id, protocol, address, probe_interval_seconds,
                                       timeout_ms, expected_status_code)
-                VALUES (?, ?, ?, ?, ?, ?) RETURNING id
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT (target_id, address) DO UPDATE SET
+                    protocol = EXCLUDED.protocol,
+                    probe_interval_seconds = EXCLUDED.probe_interval_seconds,
+                    timeout_ms = EXCLUDED.timeout_ms,
+                    expected_status_code = EXCLUDED.expected_status_code,
+                    is_active = true
+                RETURNING id
                 """, UUID.class, targetId, protocol, address, probeIntervalSeconds,
                 timeoutMs, expectedStatusCode);
     }
@@ -174,10 +188,22 @@ public class EvaluationStore {
                 rs.getInt("window_days")));
     }
 
+    /**
+     * Sets an objective, replacing any existing one of the same type.
+     *
+     * <p>One objective per SLI type per target: two availability objectives on one
+     * service is not a stricter promise, it is two answers to the same question, and
+     * the alerting sweep would evaluate both.
+     */
     public UUID addSlo(UUID targetId, Models.SliType sliType, double objectiveValue, int windowDays) {
         return jdbc.queryForObject("""
                 INSERT INTO slo (target_id, sli_type, objective_value, window_days)
-                VALUES (?, ?, ?, ?) RETURNING id
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT (target_id, sli_type) DO UPDATE SET
+                    objective_value = EXCLUDED.objective_value,
+                    window_days = EXCLUDED.window_days,
+                    is_active = true
+                RETURNING id
                 """, UUID.class, targetId, sliType.name(), objectiveValue, windowDays);
     }
 

@@ -149,6 +149,41 @@ Six screens over the platform API, styled as a dark operator console:
 
 ## Verified So Far
 
+### The fleet: five microservices, registered from a Docker image
+
+Everything the platform manages is now a container image it registered, deployed and
+measures. No seeded rows, no workloads deployed outside the platform.
+
+```
+service      health   replicas  image                             calls
+storefront   HEALTHY    1/1     sample-service:built-by-platform  orders, catalog
+orders       HEALTHY    1/1     sample-service:built-by-platform  payments, catalog
+shipping     HEALTHY    2/2     sample-service:built-by-platform  catalog
+payments     HEALTHY    1/1     sample-service:built-by-platform  (leaf)
+catalog      HEALTHY    1/1     sample-service:built-by-platform  (leaf)
+```
+
+The image was built by the platform itself from this repository, and every score is a
+measurement: `catalog 100.0 / 41.4ms p95`, `storefront 100.0 / 35.9ms p95`, and so on
+from probes against each service's working endpoint.
+
+The replica counts differ because the control plane scaled the idle ones down on its
+own — `catalog: 2->1 on cpu`, `orders: 2->1 on cpu` — which is the platform doing its
+job rather than drift.
+
+**Registration is idempotent, which it was not.** Re-registering a service used to add a
+second endpoint at the same URL and a second copy of every objective: the workload was
+then probed twice and the alerting sweep evaluated both, so availability became a
+function of how many times somebody pressed Register. Unique constraints on
+`(target, address)` and `(target, sli_type)` now make a repeat registration a repeat of
+one statement. Verified: 10 endpoints collapsed to 5, 20 SLOs to 10, and registering
+again changes neither.
+
+**The listing groups by service, not by probe.** A service may legitimately have more
+than one endpoint, and showing it once per probe put every service on the screen twice.
+
+
+
 ### Microservice registration, front to back
 
 One call, and one screen, that take a container image to a measured service.

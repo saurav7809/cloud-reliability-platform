@@ -209,7 +209,15 @@ public class MicroserviceController {
         UUID orgId = Tenant.currentOrgId();
         List<MicroserviceView> views = new ArrayList<>();
 
+        // Grouped by target, not by endpoint. A service may legitimately have more
+        // than one probe, and listing it once per probe would show it twice on a
+        // screen whose whole job is to say what is registered.
+        java.util.Map<UUID, EvaluationStore.ProbeEndpoint> byTarget = new java.util.LinkedHashMap<>();
         for (EvaluationStore.ProbeEndpoint endpoint : evaluation.activeEndpoints()) {
+            byTarget.putIfAbsent(endpoint.targetId(), endpoint);
+        }
+
+        for (EvaluationStore.ProbeEndpoint endpoint : byTarget.values()) {
             WorkloadObservationSummary summary = observe(endpoint);
 
             String image = builds.history(orgId, endpoint.serviceName(), 1).stream()
