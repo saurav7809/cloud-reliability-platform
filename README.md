@@ -149,6 +149,48 @@ Six screens over the platform API, styled as a dark operator console:
 
 ## Verified So Far
 
+### Microservice registration, front to back
+
+One call, and one screen, that take a container image to a measured service.
+
+`POST /api/v1/microservices` declares the service, deploys the image with its
+dependency wiring, registers it as a managed target, starts probing it and gives it
+SLOs. Each step is named in the response rather than collapsed into success or
+failure:
+
+```
+declared service shipping
+deployed kind-registry:5000/aegiscloud/sample-service:built-by-platform (2 replicas)
+registered as a managed target, scaling strategy CPU
+probing k8s://aegiscloud-live/shipping:80/api/work
+SLOs: 99.0% availability, p95 under 250ms
+```
+
+**Why one call rather than six.** Every step is still its own endpoint. The composite
+exists because doing it in six made the caller responsible for the ordering and for
+cleaning up when step four failed — and a half-registered service is the worst
+available outcome: deployed and serving traffic, yet invisible to scaling, healing,
+evaluation and RCA. That state is not noticed until an incident. A deployment that
+fails now stops the sequence rather than registering a target for a workload that is
+not running, because every engine would then skip it and report it missing, which
+reads as a platform bug rather than a failed deploy.
+
+**The dashboard has a Microservices page.** Register a service from a form, see what is
+managed with live cluster state beside the recorded state, read deployment history, and
+roll back. The two states are shown side by side deliberately — the interesting cases
+are exactly where they disagree.
+
+**A disagreement the page immediately exposed.** `catalog` showed `:v2` in history while
+the cluster ran `:built-by-platform`: rollback deployed but never recorded itself, so
+the history was stale and the *next* rollback would have read that stale row as its
+target. Rollback now records itself like any other deployment, and the two agree.
+
+The probe path defaults to `/api/work`, not `/healthz`. Liveness must stay self-only —
+a pod should never be restarted because something it calls is down — while the working
+endpoint fails when a dependency fails, and that is what availability should mean.
+
+
+
 ### Container build and deployment history
 
 The platform can now produce the images it runs, and remembers what it deployed.

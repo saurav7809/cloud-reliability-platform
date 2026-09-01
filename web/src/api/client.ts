@@ -303,3 +303,87 @@ export function openControlPlaneStream(
 
   return source;
 }
+
+/* ------------------------------ microservices ------------------------------ */
+
+/** A registered microservice, with what the cluster says about it right now. */
+export interface Microservice {
+  targetId: string;
+  name: string;
+  namespace: string;
+  cluster: string;
+  image: string;
+  desiredReplicas: number;
+  readyReplicas: number;
+  health: "HEALTHY" | "DEGRADED" | "DOWN" | "MISSING";
+  dependencies: string[];
+}
+
+export interface RegisterMicroservice {
+  name: string;
+  image: string;
+  cluster: string;
+  namespace?: string;
+  replicas: number;
+  containerPort: number;
+  probePath?: string;
+  ownerTeam?: string;
+  scalingStrategy?: string;
+  latencyObjectiveMs?: number;
+  availabilityObjectivePct?: number;
+  dependencies?: Record<string, string>;
+}
+
+/** Each step the registration took, so a partial one can be read rather than guessed at. */
+export interface RegisterResult {
+  serviceId: string;
+  targetId: string | null;
+  name: string;
+  namespace: string;
+  deployed: boolean;
+  managed: boolean;
+  measured: boolean;
+  steps: string[];
+  detail: string;
+}
+
+export interface DeploymentRecord {
+  id: number;
+  clusterName: string;
+  namespace: string;
+  workload: string;
+  image: string;
+  previousImage: string | null;
+  replicas: number;
+  actor: string;
+  succeeded: boolean;
+  detail: string;
+  deployedAt: string;
+}
+
+export const getMicroservices = (t: string) =>
+  authed<Microservice[]>("/api/v1/microservices", t);
+
+export const registerMicroservice = (t: string, body: RegisterMicroservice) =>
+  authed<RegisterResult>("/api/v1/microservices", t, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+
+export const getDeploymentHistory = (t: string, workload?: string) =>
+  authed<DeploymentRecord[]>(
+    `/api/v1/deployments/history${workload ? `?workload=${encodeURIComponent(workload)}` : ""}`,
+    t,
+  );
+
+export const rollbackDeployment = (
+  t: string,
+  cluster: string,
+  namespace: string,
+  workload: string,
+) =>
+  authed<{ workload: string; rolledBackTo: string; succeeded: boolean; detail: string }>(
+    "/api/v1/deployments/rollback",
+    t,
+    { method: "POST", body: JSON.stringify({ cluster, namespace, workload }) },
+  );

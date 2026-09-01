@@ -30,12 +30,21 @@ import { ServicesPage } from "../pages/ServicesPage";
 import { ControlPlanePage } from "../pages/ControlPlanePage";
 import { ReliabilityPage } from "../pages/ReliabilityPage";
 import { AlertsPage } from "../pages/AlertsPage";
+import { MicroservicesPage } from "../pages/MicroservicesPage";
 
-type Tab = "overview" | "clusters" | "services" | "control" | "reliability" | "alerts";
+type Tab =
+  | "overview"
+  | "clusters"
+  | "microservices"
+  | "services"
+  | "control"
+  | "reliability"
+  | "alerts";
 
 const NAV: { id: Tab; label: string; icon: string }[] = [
   { id: "overview", label: "Overview", icon: "◎" },
   { id: "clusters", label: "Clusters", icon: "▦" },
+  { id: "microservices", label: "Microservices", icon: "⬢" },
   { id: "services", label: "Services", icon: "◈" },
   { id: "control", label: "Control Plane", icon: "⟳" },
   { id: "reliability", label: "Reliability", icon: "◔" },
@@ -163,6 +172,9 @@ export function Dashboard({
             {tab === "overview" && <OverviewPage data={data.overview} />}
             {tab === "clusters" && (
               <ClustersPage clusters={data.clusters} policies={data.policies} />
+            )}
+            {tab === "microservices" && (
+              <MicroservicesPage token={token} clusters={data.clusters} />
             )}
             {tab === "services" && (
               <ServicesPage services={data.services} targets={data.targets} />

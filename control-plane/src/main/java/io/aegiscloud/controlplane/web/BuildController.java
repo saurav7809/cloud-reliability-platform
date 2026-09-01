@@ -6,6 +6,7 @@ import io.aegiscloud.controlplane.auth.Tenant;
 import io.aegiscloud.controlplane.build.BuildStore;
 import io.aegiscloud.controlplane.build.ImageBuildService;
 import io.aegiscloud.controlplane.k8s.DeploymentEngine;
+import io.aegiscloud.controlplane.persistence.ClusterRepository;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -35,13 +36,16 @@ public class BuildController {
     private final BuildStore store;
     private final DeploymentEngine engine;
     private final AuditLog audit;
+    private final ClusterRepository clusters;
 
     public BuildController(ImageBuildService builds, BuildStore store,
-                           DeploymentEngine engine, AuditLog audit) {
+                           DeploymentEngine engine, AuditLog audit,
+                           ClusterRepository clusters) {
         this.builds = builds;
         this.store = store;
         this.engine = engine;
         this.audit = audit;
+        this.clusters = clusters;
     }
 
     public record BuildRequestBody(
@@ -154,6 +158,15 @@ public class BuildController {
         DeploymentEngine.DeploymentOutcome outcome = engine.deploy(
                 request.cluster(), request.namespace(), request.workload(),
                 previous.image(), previous.replicas(), 8080, true, env);
+
+        // A rollback is a deployment and belongs in the history like any other.
+        // Without this the record says one image is running while the cluster runs
+        // another, and the next rollback reads that stale record as its target.
+        clusters.findByOrgIdAndName(orgId, request.cluster()).ifPresent(cluster ->
+                store.recordDeployment(cluster.getId(), request.namespace(), request.workload(),
+                        previous.image(), outcome.previousImage(), previous.replicas(), env,
+                        UUID.fromString(CurrentUser.get().id()), outcome.succeeded(),
+                        "rollback: " + outcome.detail()));
 
         audit.recordUserAction("ROLLBACK_DEPLOYMENT", "workload",
                 request.namespace() + "/" + request.workload(),
