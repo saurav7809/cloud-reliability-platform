@@ -90,3 +90,11 @@ aegiscloud:
     watch-debounce-seconds: ${AEGISCLOUD_WATCH_DEBOUNCE_SECONDS:10}
     watch-start-delay-ms: ${AEGISCLOUD_WATCH_START_DELAY_MS:10000}
     watch-refresh-ms: ${AEGISCLOUD_WATCH_REFRESH_MS:120000}
+
+  # Root cause analysis (Phase 8).
+  rca:
+    # The reliability score under which a service counts as degraded and becomes a
+    # candidate in an incident.
+    degraded-below: ${AEGISCLOUD_RCA_DEGRADED_BELOW:80}
+    # How far back RCA looks for the changes and the degradation onset it cites.
+    lookback-minutes: ${AEGISCLOUD_RCA_LOOKBACK_MINUTES:30}

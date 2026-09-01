@@ -121,6 +121,27 @@ public class EvaluationStore {
         return availabilityId;
     }
 
+    /**
+     * Samples inside a window measured in minutes.
+     *
+     * <p>Separate from the day-based query because the two windows answer different
+     * questions and must not share one. An error budget is deliberately long-memoried
+     * — a budget that forgets last week is not a budget. A reliability score used for
+     * incident detection has to reflect now: over a day of history, a service that
+     * went down five minutes ago still scores in the nineties, because most of the
+     * day's probes succeeded. Detection would take hours.
+     */
+    public List<SloEvaluator.Sample> samplesWithin(UUID targetId, String metricType, int minutes) {
+        return jdbc.query("""
+                SELECT value, COALESCE(success, true) AS success
+                FROM metric_sample
+                WHERE target_id = ? AND metric_type = ?
+                  AND sampled_at > now() - make_interval(mins => ?)
+                ORDER BY sampled_at
+                """, (rs, i) -> new SloEvaluator.Sample(rs.getDouble("value"), rs.getBoolean("success")),
+                targetId, metricType, minutes);
+    }
+
     /** Samples of one metric type for a target inside a window, oldest first. */
     public List<SloEvaluator.Sample> samples(UUID targetId, String metricType, int windowDays) {
         return jdbc.query("""

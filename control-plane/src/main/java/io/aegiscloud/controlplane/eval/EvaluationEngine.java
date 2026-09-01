@@ -124,12 +124,14 @@ public class EvaluationEngine {
      * probing again.
      */
     private OptionalDouble scoreFromRecentSamples(UUID targetId) {
-        List<SloEvaluator.Sample> availability = store.samples(targetId, "AVAILABILITY", 1);
+        List<SloEvaluator.Sample> availability =
+                store.samplesWithin(targetId, "AVAILABILITY", scoreWindowMinutes);
         if (availability.isEmpty()) {
             return OptionalDouble.empty();
         }
 
-        List<SloEvaluator.Sample> latency = store.samples(targetId, "LATENCY_MS", 1);
+        List<SloEvaluator.Sample> latency =
+                store.samplesWithin(targetId, "LATENCY_MS", scoreWindowMinutes);
         double availabilityPct = availability.stream().filter(SloEvaluator.Sample::success).count()
                 * 100.0 / availability.size();
 
@@ -247,11 +249,10 @@ public class EvaluationEngine {
         for (Map.Entry<UUID, String> entry : targets.entrySet()) {
             UUID targetId = entry.getKey();
 
-            // The score window is short and expressed in minutes, while sample
-            // retrieval takes whole days; one day is the smallest honest bucket that
-            // covers it without pulling a month of history into a per-minute pass.
-            List<SloEvaluator.Sample> availability = store.samples(targetId, "AVAILABILITY", 1);
-            List<SloEvaluator.Sample> latency = store.samples(targetId, "LATENCY_MS", 1);
+            List<SloEvaluator.Sample> availability =
+                    store.samplesWithin(targetId, "AVAILABILITY", scoreWindowMinutes);
+            List<SloEvaluator.Sample> latency =
+                    store.samplesWithin(targetId, "LATENCY_MS", scoreWindowMinutes);
 
             if (availability.isEmpty()) {
                 continue;

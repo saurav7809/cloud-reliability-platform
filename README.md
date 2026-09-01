@@ -33,7 +33,7 @@ foundational design.
 | 5 — Evaluation Engine (synthetic probes, SLO evaluation, error budgets, reliability scoring) | ✅ done |
 | 6 — Experiment Engine (chaos, safety rules, steady-state hypothesis, always restores) | ✅ done |
 | 7 — Dependency & Propagation (service graph, blast radius, SPOF, critical path) | ✅ done |
-| 8 — Root Cause Analysis (multi-signal correlation, explainable verdicts) | planned |
+| 8 — Root Cause Analysis (multi-signal correlation, explainable verdicts, measured accuracy) | ✅ done |
 | 9 — Optimization Advisor (cost + performance recommendations) | planned |
 | 10 — Multi-Cloud & Hardening (real EKS/AKS/GKE, multi-tenancy, production) | planned |
 
@@ -147,6 +147,62 @@ Six screens over the platform API, styled as a dark operator console:
 > client-go. The dashboard says so on its Overview screen rather than implying live data.
 
 ## Verified So Far
+
+### Phase 8 — Root Cause Analysis
+
+Ranked candidate causes from four signal classes — graph position, temporal order,
+change events, resource saturation — each verdict carrying the facts it rests on.
+
+**A real diagnosis.** `auth-service` was taken to zero replicas; once its measured
+score fell, diagnosing produced:
+
+```
+auth-service, likely cause (confidence 0.66)
+  TEMPORAL_ORDER       degraded first, at 2026-09-01T06:13:39Z
+  CHANGE_EVENT         4 changes near the incident: scaled 2 -> 1 on cpu; ...;
+                       ESCALATED auth-service-744b6794fc-tdzng (IMAGE_PULL_FAILURE)
+  RESOURCE_SATURATION  reliability score fell 94.3 points
+```
+
+**Accuracy against ground truth.** Chaos runs are the only incidents whose true cause
+the platform knows, because it caused them. `GET /api/v1/rca/accuracy` re-analyses
+each run's window and checks whether the top verdict names the service that was
+actually broken: **1 of 1 scored correct**. Runs where nothing degraded measurably are
+reported as unscored rather than counted either way — a chaos run the system shrugged
+off has no incident to diagnose, and scoring it would move the number without
+measuring anything.
+
+**FR-29 is structural, not a filter.** Confidence is derived *from* the evidence list,
+so a candidate with no supporting facts has no confidence to compute and never becomes
+a verdict. Verified: an isolated service with no graph position, no timing, no changes
+and healthy pods produces no verdict at all.
+
+**Symptoms are labelled, not discarded.** An early draft dropped low-confidence
+candidates, which threw away the most useful output in the three-alerts-one-cause
+incident: telling the operator that two of the three are downstream and need no
+separate investigation. Downstream candidates are now kept and marked
+`LIKELY_SYMPTOM` with the counter-evidence stated.
+
+**Three bugs found by running it, all of the same family — seeded fixtures being
+mistaken for measurements:**
+
+1. Diagnosis opened an incident for a service scoring 100, because it read the
+   denormalised score column, which holds a number for every target including ones
+   nothing has ever probed. Candidacy now requires a `reliability_score_snapshot` row,
+   which exists only because something was measured.
+2. The configured score window was decorative: scoring always read a day of samples,
+   so a service that went down five minutes ago still scored in the nineties.
+   Detection would have taken hours. The window is now honoured, and SLO windows stay
+   long on purpose — a budget that forgets last week is not a budget.
+3. The accuracy harness scored a seeded `NETWORK_PARTITION` row — a fault type the
+   engine cannot even inject. Ground truth is now restricted to runs the platform
+   actually executed and recorded.
+
+**The Intelligence Layer never writes to a cluster.** Every cluster call in it is a
+read, and there is exactly one: listing pods. A wrong diagnosis stays a wrong sentence
+on a screen; only the policy-gated Control Plane acts.
+
+
 
 ### Phase 7 — Dependency & Propagation
 
