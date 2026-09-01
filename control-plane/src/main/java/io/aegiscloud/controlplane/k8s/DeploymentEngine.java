@@ -172,6 +172,11 @@ public class DeploymentEngine {
             Deployment existing = client.apps().deployments()
                     .inNamespace(namespace).withName(workloadName).get();
 
+            String previousImage = existing == null ? null
+                    : existing.getSpec().getTemplate().getSpec().getContainers().stream()
+                    .findFirst().map(io.fabric8.kubernetes.api.model.Container::getImage)
+                    .orElse(null);
+
             if (existing != null && !isManagedByPlatform(existing) && !adopt) {
                 // Refusing here is the whole point. Server-side apply merges list
                 // entries by key, so applying over a deployment somebody else wrote
@@ -221,7 +226,7 @@ public class DeploymentEngine {
                     namespace, workloadName, clusterName, readyReplicas, replicas);
 
             return new DeploymentOutcome(true, workloadName, namespace, clusterName,
-                    replicas, readyReplicas, "applied");
+                    replicas, readyReplicas, "applied", previousImage);
 
         } catch (Exception e) {
             log.warn("deploy of {}/{} to {} failed: {}", namespace, workloadName, clusterName, e.getMessage());
@@ -380,7 +385,14 @@ public class DeploymentEngine {
         return message == null ? current.getClass().getSimpleName() : message;
     }
 
-    /** The result of a deploy or status read. */
+    /**
+     * The result of a deploy or status read.
+     *
+     * @param previousImage what was running before this deployment, or null when
+     *                      nothing was. Captured here because it stops being
+     *                      knowable the moment the object is overwritten, and it is
+     *                      exactly what a rollback needs.
+     */
     public record DeploymentOutcome(
             boolean succeeded,
             String workload,
@@ -388,6 +400,14 @@ public class DeploymentEngine {
             String cluster,
             int desiredReplicas,
             int readyReplicas,
-            String detail) {
+            String detail,
+            String previousImage) {
+
+        public DeploymentOutcome(boolean succeeded, String workload, String namespace,
+                                 String cluster, int desiredReplicas, int readyReplicas,
+                                 String detail) {
+            this(succeeded, workload, namespace, cluster, desiredReplicas, readyReplicas,
+                    detail, null);
+        }
     }
 }

@@ -129,3 +129,16 @@ aegiscloud:
   # this to false; the endpoint then answers 403 with a reason.
   signup:
     enabled: ${AEGISCLOUD_SIGNUP_ENABLED:true}
+
+  # Image registry for builds. Empty means builds are refused with a reason
+  # rather than attempted against nowhere.
+  registry:
+    url: ${AEGISCLOUD_REGISTRY_URL:}
+    # A local registry speaks plain HTTP. Stated rather than assumed, so a real
+    # deployment against a TLS registry does not silently keep pushing in clear.
+    insecure: ${AEGISCLOUD_REGISTRY_INSECURE:true}
+
+  # How often running builds are checked for completion.
+  build:
+    poll-ms: ${AEGISCLOUD_BUILD_POLL_MS:15000}
+    initial-delay-ms: ${AEGISCLOUD_BUILD_INITIAL_DELAY_MS:30000}

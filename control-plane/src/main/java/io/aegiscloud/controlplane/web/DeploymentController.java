@@ -1,6 +1,7 @@
 package io.aegiscloud.controlplane.web;
 
 import io.aegiscloud.controlplane.audit.AuditLog;
+import io.aegiscloud.controlplane.build.BuildStore;
 import io.aegiscloud.controlplane.auth.Tenant;
 import io.aegiscloud.controlplane.domain.Models;
 import io.aegiscloud.controlplane.k8s.ClusterConnectivity;
@@ -39,15 +40,17 @@ public class DeploymentController {
     private final OrganizationRepository organizations;
     private final TargetRegistry targets;
     private final AuditLog audit;
+    private final BuildStore builds;
 
     public DeploymentController(DeploymentEngine engine, ClusterRepository clusters,
                                 OrganizationRepository organizations, TargetRegistry targets,
-                                AuditLog audit) {
+                                AuditLog audit, BuildStore builds) {
         this.engine = engine;
         this.clusters = clusters;
         this.organizations = organizations;
         this.targets = targets;
         this.audit = audit;
+        this.builds = builds;
     }
 
     public record RegisterClusterRequest(
@@ -158,6 +161,17 @@ public class DeploymentController {
                     request.cluster(), request.namespace(), request.workload(),
                     request.image(), request.replicas(), request.containerPort(), request.adopt(),
                     request.env() == null ? java.util.Map.of() : request.env());
+
+            // Recorded whether or not it worked. A failed rollout is the thing an
+            // incident investigation most wants to find, and a history that only
+            // keeps successes cannot show it.
+            clusters.findByOrgIdAndName(Tenant.currentOrgId(), request.cluster())
+                    .ifPresent(cluster -> builds.recordDeployment(
+                            cluster.getId(), request.namespace(), request.workload(),
+                            request.image(), outcome.previousImage(), request.replicas(),
+                            request.env() == null ? java.util.Map.of() : request.env(),
+                            UUID.fromString(io.aegiscloud.controlplane.auth.CurrentUser.get().id()),
+                            outcome.succeeded(), outcome.detail()));
 
             audit.recordUserAction("DEPLOY_WORKLOAD", "workload",
                     request.namespace() + "/" + request.workload(),
