@@ -1,6 +1,7 @@
 package io.aegiscloud.controlplane.web;
 
 import io.aegiscloud.controlplane.auth.CurrentUser;
+import io.aegiscloud.controlplane.audit.AuditLog;
 import io.aegiscloud.controlplane.auth.Tenant;
 import io.aegiscloud.controlplane.optimize.OptimizationService;
 import io.aegiscloud.controlplane.optimize.RecommendationStore;
@@ -30,10 +31,13 @@ public class OptimizationController {
 
     private final OptimizationService optimization;
     private final RecommendationStore store;
+    private final AuditLog audit;
 
-    public OptimizationController(OptimizationService optimization, RecommendationStore store) {
+    public OptimizationController(OptimizationService optimization, RecommendationStore store,
+                                  AuditLog audit) {
         this.optimization = optimization;
         this.store = store;
+        this.audit = audit;
     }
 
     /**
@@ -66,7 +70,13 @@ public class OptimizationController {
     @PreAuthorize("hasAnyRole('ADMIN','OPERATOR')")
     public OptimizationService.ApplyResult apply(@PathVariable String id) {
         try {
-            return optimization.apply(Tenant.currentOrgId(), uuid(id), UUID.fromString(CurrentUser.get().id()));
+            OptimizationService.ApplyResult result = optimization.apply(
+                    Tenant.currentOrgId(), uuid(id), UUID.fromString(CurrentUser.get().id()));
+
+            audit.recordUserAction("APPLY_RECOMMENDATION", "recommendation", id,
+                    java.util.Map.of("status", result.status(), "detail", result.detail()));
+
+            return result;
         } catch (IllegalArgumentException e) {
             throw ApiException.notFound(e.getMessage());
         } catch (IllegalStateException e) {

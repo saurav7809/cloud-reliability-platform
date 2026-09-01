@@ -1,5 +1,6 @@
 package io.aegiscloud.controlplane.web;
 
+import io.aegiscloud.controlplane.audit.AuditLog;
 import io.aegiscloud.controlplane.auth.Tenant;
 import io.aegiscloud.controlplane.domain.Models;
 import io.aegiscloud.controlplane.store.PlatformStore;

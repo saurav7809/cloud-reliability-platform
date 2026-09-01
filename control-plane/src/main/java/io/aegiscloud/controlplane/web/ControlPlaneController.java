@@ -1,5 +1,6 @@
 package io.aegiscloud.controlplane.web;
 
+import io.aegiscloud.controlplane.audit.AuditLog;
 import io.aegiscloud.controlplane.auth.CurrentUser;
 import io.aegiscloud.controlplane.engine.ActionType;
 import io.aegiscloud.controlplane.engine.AutonomyLevel;
@@ -42,13 +43,16 @@ public class ControlPlaneController {
     private final ReconciliationLoop loop;
     private final ClusterRepository clusters;
     private final ControlPlaneEvents events;
+    private final AuditLog audit;
 
     public ControlPlaneController(ControlPlaneStore store, ReconciliationLoop loop,
-                                  ClusterRepository clusters, ControlPlaneEvents events) {
+                                  ClusterRepository clusters, ControlPlaneEvents events,
+                                  AuditLog audit) {
         this.store = store;
         this.loop = loop;
         this.clusters = clusters;
         this.events = events;
+        this.audit = audit;
     }
 
     /**
@@ -87,7 +91,16 @@ public class ControlPlaneController {
         ActionType actionType = parse(ActionType.class, update.actionType(), "action type");
         AutonomyLevel level = parse(AutonomyLevel.class, update.level(), "autonomy level");
 
+        AutonomyLevel previous = store.levelFor(clusterId, actionType);
         store.setLevel(clusterId, actionType, level, UUID.fromString(CurrentUser.get().id()));
+
+        // Raising autonomy is the single most consequential setting change the
+        // platform has: it is the difference between the loop suggesting and the
+        // loop acting. Both the old and new values are recorded.
+        audit.recordChange("SET_AUTONOMY", "autonomy_setting",
+                clusterId + ":" + actionType,
+                java.util.Map.of("level", previous.name()),
+                java.util.Map.of("level", level.name()));
 
         return store.autonomySettings().stream()
                 .filter(s -> s.clusterId().equals(clusterId.toString())
@@ -114,9 +127,19 @@ public class ControlPlaneController {
     @PreAuthorize("hasRole('ADMIN')")
     public PolicyLimits setPolicy(@PathVariable String clusterId, @Valid @RequestBody PolicyUpdate update) {
         UUID id = clusterId(clusterId);
+        PolicyLimits previous = store.limitsFor(id);
         PolicyLimits limits = new PolicyLimits(update.maxReplicas(), update.maxConcurrentExperiments(),
                 update.protectedNamespaces() == null ? List.of() : update.protectedNamespaces());
         store.savePolicy(id, limits);
+
+        audit.recordChange("SET_POLICY", "policy", id.toString(),
+                java.util.Map.of("maxReplicas", previous.maxReplicas(),
+                        "maxConcurrentExperiments", previous.maxConcurrentExperiments(),
+                        "protectedNamespaces", previous.protectedNamespaces()),
+                java.util.Map.of("maxReplicas", limits.maxReplicas(),
+                        "maxConcurrentExperiments", limits.maxConcurrentExperiments(),
+                        "protectedNamespaces", limits.protectedNamespaces()));
+
         return store.limitsFor(id);
     }
 

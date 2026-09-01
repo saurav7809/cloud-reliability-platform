@@ -1,5 +1,6 @@
 package io.aegiscloud.controlplane.web;
 
+import io.aegiscloud.controlplane.audit.AuditLog;
 import io.aegiscloud.controlplane.experiment.ExperimentEngine;
 import io.aegiscloud.controlplane.experiment.ExperimentStore;
 import io.aegiscloud.controlplane.experiment.FaultType;
@@ -31,10 +32,12 @@ public class ExperimentController {
 
     private final ExperimentEngine engine;
     private final ExperimentStore store;
+    private final AuditLog audit;
 
-    public ExperimentController(ExperimentEngine engine, ExperimentStore store) {
+    public ExperimentController(ExperimentEngine engine, ExperimentStore store, AuditLog audit) {
         this.engine = engine;
         this.store = store;
+        this.audit = audit;
     }
 
     /**
@@ -67,6 +70,12 @@ public class ExperimentController {
         }
 
         try {
+            audit.recordUserAction("START_EXPERIMENT", "deployment_target", request.targetId(),
+                    java.util.Map.of("faultType", faultType.name(),
+                            "magnitude", request.magnitude(),
+                            "durationSeconds", request.durationSeconds(),
+                            "dependencyTargetId", String.valueOf(request.dependencyTargetId())));
+
             return engine.start(new ExperimentEngine.ExperimentRequest(
                     uuid(request.targetId()), faultType, request.magnitude(),
                     request.durationSeconds(),

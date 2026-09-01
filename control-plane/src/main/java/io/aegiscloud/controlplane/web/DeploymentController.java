@@ -1,5 +1,6 @@
 package io.aegiscloud.controlplane.web;
 
+import io.aegiscloud.controlplane.audit.AuditLog;
 import io.aegiscloud.controlplane.auth.Tenant;
 import io.aegiscloud.controlplane.domain.Models;
 import io.aegiscloud.controlplane.k8s.ClusterConnectivity;
@@ -37,13 +38,16 @@ public class DeploymentController {
     private final ClusterRepository clusters;
     private final OrganizationRepository organizations;
     private final TargetRegistry targets;
+    private final AuditLog audit;
 
     public DeploymentController(DeploymentEngine engine, ClusterRepository clusters,
-                                OrganizationRepository organizations, TargetRegistry targets) {
+                                OrganizationRepository organizations, TargetRegistry targets,
+                                AuditLog audit) {
         this.engine = engine;
         this.clusters = clusters;
         this.organizations = organizations;
         this.targets = targets;
+        this.audit = audit;
     }
 
     public record RegisterClusterRequest(
@@ -90,6 +94,11 @@ public class DeploymentController {
                 request.region(), request.kubeContext(), request.local()));
 
         ClusterConnectivity probe = engine.probe(saved.getId());
+
+        audit.recordUserAction("REGISTER_CLUSTER", "cluster", saved.getId().toString(),
+                java.util.Map.of("name", saved.getName(), "provider", provider.name(),
+                        "kubeContext", String.valueOf(request.kubeContext()),
+                        "reachable", probe.reachable()));
 
         return new ClusterRegistration(saved.getId().toString(), saved.getName(),
                 provider.name(), probe.reachable() ? "HEALTHY" : "UNREACHABLE",
@@ -144,8 +153,17 @@ public class DeploymentController {
     @PreAuthorize("hasAnyRole('ADMIN','OPERATOR')")
     public DeploymentEngine.DeploymentOutcome deploy(@RequestBody DeployRequest request) {
         try {
-            return engine.deploy(request.cluster(), request.namespace(), request.workload(),
+            DeploymentEngine.DeploymentOutcome outcome = engine.deploy(
+                    request.cluster(), request.namespace(), request.workload(),
                     request.image(), request.replicas(), request.containerPort(), request.adopt());
+
+            audit.recordUserAction("DEPLOY_WORKLOAD", "workload",
+                    request.namespace() + "/" + request.workload(),
+                    java.util.Map.of("cluster", request.cluster(), "image", request.image(),
+                            "replicas", request.replicas(), "adopted", request.adopt(),
+                            "succeeded", outcome.succeeded(), "detail", outcome.detail()));
+
+            return outcome;
         } catch (IllegalArgumentException e) {
             throw ApiException.notFound(e.getMessage());
         }
@@ -213,6 +231,10 @@ public class DeploymentController {
 
         UUID targetId = targets.register(serviceId, cluster.getId(), request.namespace(),
                 request.label(), strategy, status.desiredReplicas());
+
+        audit.recordUserAction("REGISTER_TARGET", "deployment_target", targetId.toString(),
+                java.util.Map.of("service", serviceName, "cluster", cluster.getName(),
+                        "namespace", request.namespace(), "scalingStrategy", strategy.name()));
 
         return new TargetRegistration(targetId.toString(), serviceName, cluster.getName(),
                 request.namespace(), strategy.name(), status.desiredReplicas(),

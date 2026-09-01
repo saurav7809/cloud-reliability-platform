@@ -149,6 +149,75 @@ Six screens over the platform API, styled as a dark operator console:
 
 ## Verified So Far
 
+### Closing the last four requirements
+
+Four requirements the platform had stated and not met. Nothing else from the
+architecture diagram was built — see *Deliberately not built* below.
+
+**FR-15 — metric ingestion.** Two routes into the same `metric_sample` table the
+probes write to, so SLO evaluation, scoring, RCA and the AI service treat pushed and
+probed data identically rather than growing a second code path each. Verified:
+
+```
+POST /targets/{id}/metrics   4 samples -> accepted 2, rejected 2
+                             "rejected unknown metric type: NONSENSE"
+                             "rejected LATENCY_MS with no value"
+```
+
+That second rejection was a bug caught by running it: the request record used a
+primitive `double`, so a JSON `null` became `0.0` and a null latency was stored as a
+0ms reading — a number that looks like a measurement and drags every percentile down.
+The Prometheus pull route refuses a multi-series result for the same reason: three
+series mean the query did not identify one thing, and storing the first attributes one
+pod's number to a whole target.
+
+**FR-39 — alerts from burn rate.** Raised by the platform itself, unprompted:
+
+```
+CRITICAL  auth-service @ aegiscloud-local is burning its AVAILABILITY error budget
+          14.9x faster than sustainable; at this rate the budget is gone within a
+          day (0.0% left)
+```
+
+Severity follows how fast the budget disappears, not how bad the number looks. A
+dramatic rate computed from fewer than ten samples raises nothing — a 50x burn from
+four probes is a rumour, and paging on it is how alerting loses its credibility.
+Alerts auto-resolve when the rate recovers, because an alert that stays open after the
+problem is gone teaches people that open alerts mean nothing.
+
+**FR-41 — grouping under a root cause.** The alert above was attached to the incident
+that explains it. This is the half that matters operationally: when one service fails,
+every service downstream breaches its own SLO and raises its own alert, so the moment
+the platform is most useful is the moment it produces the most noise.
+
+**FR-42 / FR-43 — audit everything.** Cluster registration, deployments, target
+registration, autonomy changes, policy changes, experiments, applied recommendations
+and metric ingestion are now recorded, alongside the engine's own actions in the same
+table with the same shape:
+
+```
+USER    SET_POLICY        admin@aegiscloud.local  {maxReplicas: 8}   was {maxReplicas: 10}
+USER    SET_AUTONOMY      admin@aegiscloud.local  {level: SUGGEST}
+USER    INGEST_METRICS    admin@aegiscloud.local  {source: OTEL, accepted: 2, rejected: 2}
+ENGINE  SCALE_DOWN        platform                {fromReplicas: 3, toReplicas: 2}
+ENGINE  ESCALATE          platform
+```
+
+Auditing never fails a request: a write that succeeded with a missing audit row is a
+recoverable gap, while a request rolled back over bookkeeping is an outage. The
+failure is logged as `AUDIT GAP` and the request stands.
+
+### Deliberately not built
+
+Prometheus, Loki, Tempo, Grafana, OpenCost, Chaos Mesh, HPA/KEDA integration, ingress
+management and capacity planning appear in the architecture diagram and are **not**
+implemented. None is required by FR-1 to FR-45. Where their absence limits something,
+the platform says so at the point of use rather than in a footnote: cost savings read
+$0.00 without OpenCost, and the Experiment Engine refuses network and resource-pressure
+faults rather than approximating them without Chaos Mesh.
+
+
+
 ### Python AI Service
 
 Anomaly detection, forecasting and RCA re-ranking, running as a FastAPI sidecar the

@@ -111,3 +111,13 @@ aegiscloud:
   ai:
     base-url: ${AEGISCLOUD_AI_BASE_URL:http://localhost:8000}
     timeout-ms: ${AEGISCLOUD_AI_TIMEOUT_MS:3000}
+
+  # Burn-rate alerting (FR-39) and alert grouping (FR-41).
+  alerting:
+    interval-ms: ${AEGISCLOUD_ALERTING_INTERVAL_MS:60000}
+    initial-delay-ms: ${AEGISCLOUD_ALERTING_INITIAL_DELAY_MS:30000}
+
+  # Metric ingestion (FR-15). Empty means no Prometheus is configured and the pull
+  # route says so rather than failing; the push route works regardless.
+  prometheus:
+    url: ${AEGISCLOUD_PROMETHEUS_URL:}
