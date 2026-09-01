@@ -30,7 +30,7 @@ foundational design.
 | 2 — Platform Foundation (Spring Boot control plane, React dashboard, auth, Docker, kind, sample workloads) | ✅ done |
 | 3 — Deployment Engine (fabric8 Kubernetes client, cluster registration, PostgreSQL) | ✅ done |
 | 4 — Control Plane (Auto-Scaling, Self-Healing, Policy Engine, autonomy levels, live event stream) | ✅ done |
-| 5 — Evaluation Engine (probes, telemetry ingestion, SLOs, scoring) | planned |
+| 5 — Evaluation Engine (synthetic probes, SLO evaluation, error budgets, reliability scoring) | ✅ done |
 | 6 — Experiment Engine (chaos — also the ground truth for measuring RCA) | planned |
 | 7 — Dependency & Propagation (service graph, blast radius, SPOF) | planned |
 | 8 — Root Cause Analysis (multi-signal correlation, explainable verdicts) | planned |
@@ -147,6 +147,48 @@ Six screens over the platform API, styled as a dark operator console:
 > client-go. The dashboard says so on its Overview screen rather than implying live data.
 
 ## Verified So Far
+
+### Phase 5 — Evaluation Engine
+
+The phase that replaces fixtures with measurements. Observed against the kind cluster:
+
+**Probing a service that has no ingress**
+- Endpoints are addressed either as ordinary URLs or as
+  `k8s://namespace/service:port/path`, which routes through the Kubernetes API
+  server's service proxy. A ClusterIP service with no NodePort and no port-forward
+  is probed exactly as it stands, over the same authenticated API used everywhere
+  else — so this works identically against kind and EKS.
+- A real probe of `auth-service` returned HTTP 200 in **16-23ms**.
+
+**A correctness fix the first run exposed**
+- The first implementation built a Kubernetes client per probe, so every measurement
+  paid for a fresh TLS handshake: readings came back at 274ms and a p95 of 1916ms.
+  That is the prober measuring itself. Clients are now pooled per cluster, and the
+  same probe reports 23ms.
+
+**SLO evaluation and error budgets**
+- Availability and latency SLOs registered against the target, evaluated over their
+  windows: *"30 of 30 measurements met the availability objective (100.00%), 100.0%
+  of budget left, burn 0.00x"* and *"p95 is 23ms against a 250ms objective"*.
+- Reliability Score climbed **70 → 100** as real samples accumulated and the cold
+  -start outlier aged out of the percentile, with every component reported alongside
+  it: `{availability=100.0, latency=100.0, errorRate=100.0}`.
+
+**The failure path**
+- Scaling `auth-service` to zero replicas made the probe fail with HTTP 503.
+  Availability fell to **77.5%**, the error budget hit **0% remaining** and a burn
+  rate of **45x**, and the score dropped to 84.3.
+- The latency SLO stayed at 31 samples while availability counted 40 — failed probes
+  never enter a latency percentile, because the time a request took to fail is not a
+  latency measurement.
+- `deployment_target` now carries measured readings (score 85.4, availability 79.17%,
+  p95 23.1ms) rather than seeded ones.
+
+**Tests** — 61 pass, covering burn-rate arithmetic at and beyond the objective,
+zero-tolerance objectives without dividing by zero, nearest-rank percentiles, score
+renormalisation when a component was never measured, and cluster-address parsing.
+
+
 
 ### Phase 4 — Control Plane
 

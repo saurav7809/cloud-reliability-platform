@@ -37,8 +37,15 @@ public final class Models {
         CPU, LATENCY, TREND, NONE
     }
 
+    /**
+     * The SLI types the schema permits.
+     *
+     * <p>Kept in step with the CHECK constraint on {@code slo.sli_type}: the database
+     * accepts all five, so a narrower enum here would fail to read a row the database
+     * was happy to store.
+     */
     public enum SliType {
-        AVAILABILITY, LATENCY_P95, ERROR_RATE
+        AVAILABILITY, LATENCY_P95, LATENCY_P99, ERROR_RATE, THROUGHPUT
     }
 
     public enum AlertSeverity {

@@ -70,3 +70,14 @@ aegiscloud:
     # How long an applied action is given to take effect before its outcome is
     # judged. Shorter than this and a rollout in progress reads as a regression.
     verification-delay-seconds: ${AEGISCLOUD_VERIFICATION_DELAY_SECONDS:60}
+
+  # The Evaluation Engine (Phase 5). These govern how often the platform measures
+  # and over what window it judges, so they are stated rather than buried.
+  evaluation:
+    # How often every registered endpoint is probed.
+    interval-ms: ${AEGISCLOUD_EVALUATION_INTERVAL_MS:60000}
+    initial-delay-ms: ${AEGISCLOUD_EVALUATION_INITIAL_DELAY_MS:15000}
+    # The window a Reliability Score covers. Short enough that a score reacts to an
+    # incident while it is happening; SLO windows are separate and far longer,
+    # because an error budget that forgets last week is not a budget.
+    score-window-minutes: ${AEGISCLOUD_SCORE_WINDOW_MINUTES:60}
