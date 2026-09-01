@@ -16,3 +16,6 @@ Thumbs.db
 
 # Compiled workload binaries
 workloads/sample-service/sample-service
+
+# Maven
+control-plane/target/
