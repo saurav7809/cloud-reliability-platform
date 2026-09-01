@@ -81,3 +81,12 @@ aegiscloud:
     # incident while it is happening; SLO windows are separate and far longer,
     # because an error budget that forgets last week is not a budget.
     score-window-minutes: ${AEGISCLOUD_SCORE_WINDOW_MINUTES:60}
+    # Kubernetes watches. Detection through the informer arrives in seconds; the
+    # scheduled sweep above stays as the backstop that catches anything a dropped
+    # watch missed.
+    watch-enabled: ${AEGISCLOUD_WATCH_ENABLED:true}
+    # A crash-looping pod emits a burst of events; the first one is acted on and the
+    # rest are absorbed rather than each starting its own reconciliation.
+    watch-debounce-seconds: ${AEGISCLOUD_WATCH_DEBOUNCE_SECONDS:10}
+    watch-start-delay-ms: ${AEGISCLOUD_WATCH_START_DELAY_MS:10000}
+    watch-refresh-ms: ${AEGISCLOUD_WATCH_REFRESH_MS:120000}

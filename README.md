@@ -148,6 +148,30 @@ Six screens over the platform API, styled as a dark operator console:
 
 ## Verified So Far
 
+### Real-time detection (Kubernetes watches)
+
+The control loop no longer waits for its own timer to notice a failure. Informers
+watch pods in every namespace that has targets, and an unhealthy pod reconciles that
+target immediately — through the same `reconcileTarget` path, and therefore the same
+policy and autonomy checks, that the scheduled sweep uses. The sweep remains as the
+backstop for anything a dropped watch missed.
+
+Measured with the polling interval deliberately set to **10 minutes**, so nothing
+observed could have come from the timer:
+
+```
+10:49:50.220  image changed to a tag that does not exist
+10:49:54.088  watch: unhealthy pod reported, reconciling now      (+3.9s)
+10:49:55.411  escalated: "pod cannot obtain its image (ErrImagePull);
+              a restart would fail identically"                   (+5.2s)
+```
+
+Detection in under four seconds against a sixty-second polling floor, and the burst
+of events a crash loop produces is debounced so one failure does not become a
+stampede of reconciliations.
+
+
+
 ### Phase 5 — Evaluation Engine
 
 The phase that replaces fixtures with measurements. Observed against the kind cluster:

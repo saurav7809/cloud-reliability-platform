@@ -123,31 +123,68 @@ public class ReconciliationLoop {
 
         List<ManagedTarget> targets = store.reachableTargets();
         for (ManagedTarget target : targets) {
-            WorkloadObservation observation =
-                    workloads.observe(target.kubeContext(), target.namespace(), target.workload());
-
-            if (!observation.found()) {
-                // A target row whose workload is not on the cluster is a fact worth
-                // reporting, not something to act on: there is nothing to scale or
-                // heal, and guessing would mean writing to a cluster about a
-                // workload the platform cannot see.
+            Tally tally = reconcileOne(target, decisions);
+            if (tally == null) {
                 skipped++;
-                note(decisions, target.label(), "skipped: " + observation.detail());
                 continue;
             }
-
-            store.updateReplicas(target.targetId(), observation.desiredReplicas());
-
-            Tally healing = heal(target, observation, decisions);
-            Tally scaling = scale(target, observation, decisions);
-
-            applied += healing.applied() + scaling.applied();
-            suggested += healing.suggested() + scaling.suggested();
-            rejected += healing.rejected() + scaling.rejected();
+            applied += tally.applied();
+            suggested += tally.suggested();
+            rejected += tally.rejected();
         }
 
         CycleReport report = new CycleReport(startedAt, targets.size(), skipped, decisions,
                 applied, suggested, rejected, verified);
+        events.broadcast("cycle-finished", report);
+        return report;
+    }
+
+    /**
+     * Reconciles one target. Returns null when its workload is not on the cluster.
+     *
+     * <p>Shared by the scheduled sweep and by the watch-driven path, so a failure
+     * noticed by a Kubernetes event is handled by exactly the same code - and the
+     * same policy checks - as one noticed by the timer.
+     */
+    private Tally reconcileOne(ManagedTarget target, List<String> decisions) {
+        WorkloadObservation observation =
+                workloads.observe(target.kubeContext(), target.namespace(), target.workload());
+
+        if (!observation.found()) {
+            // A target row whose workload is not on the cluster is a fact worth
+            // reporting, not something to act on: there is nothing to scale or
+            // heal, and guessing would mean writing to a cluster about a workload
+            // the platform cannot see.
+            note(decisions, target.label(), "skipped: " + observation.detail());
+            return null;
+        }
+
+        store.updateReplicas(target.targetId(), observation.desiredReplicas());
+
+        return heal(target, observation, decisions).plus(scale(target, observation, decisions));
+    }
+
+    /**
+     * Reconciles a single target immediately, outside the sweep.
+     *
+     * <p>This is what a Kubernetes watch event calls. Waiting for the next scheduled
+     * cycle to notice a pod that has already failed is dead time in the detection
+     * measurement the platform reports as MTTD, and the cluster has already told us.
+     */
+    public CycleReport reconcileTarget(UUID targetId) {
+        Instant startedAt = Instant.now();
+        List<String> decisions = new ArrayList<>();
+
+        ManagedTarget target = store.target(targetId)
+                .orElseThrow(() -> new IllegalArgumentException("no such deployment target: " + targetId));
+
+        Tally tally = reconcileOne(target, decisions);
+        if (tally == null) {
+            return new CycleReport(startedAt, 1, 1, decisions, 0, 0, 0, 0);
+        }
+
+        CycleReport report = new CycleReport(startedAt, 1, 0, decisions,
+                tally.applied(), tally.suggested(), tally.rejected(), 0);
         events.broadcast("cycle-finished", report);
         return report;
     }
