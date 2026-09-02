@@ -387,3 +387,42 @@ export const rollbackDeployment = (
     t,
     { method: "POST", body: JSON.stringify({ cluster, namespace, workload }) },
   );
+
+/* --------------------------------- builds ---------------------------------- */
+
+export interface Build {
+  id: string;
+  serviceName: string | null;
+  clusterName: string;
+  gitUrl: string;
+  gitRef: string;
+  contextPath: string;
+  image: string;
+  status: "RUNNING" | "SUCCEEDED" | "FAILED";
+  detail: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+}
+
+export interface StartBuild {
+  clusterName: string;
+  gitUrl: string;
+  gitRef?: string;
+  contextPath?: string;
+  dockerfile?: string;
+  imageName: string;
+  tag?: string;
+}
+
+export const getBuilds = (t: string) => authed<Build[]>("/api/v1/builds", t);
+
+export const startBuild = (t: string, body: StartBuild) =>
+  authed<{ buildId: string; image: string; jobName: string; detail: string }>(
+    "/api/v1/builds",
+    t,
+    { method: "POST", body: JSON.stringify(body) },
+  );
+
+/** Whether this deployment has a registry to push built images to. */
+export const getRegistry = (t: string) =>
+  authed<{ configured: boolean; url: string; note: string }>("/api/v1/registry", t);

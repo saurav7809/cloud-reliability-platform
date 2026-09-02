@@ -42,10 +42,12 @@ type Tab =
   | "alerts";
 
 const NAV: { id: Tab; label: string; icon: string }[] = [
+  // Ordered as the platform works: register and run a service first, then the
+  // capabilities that only mean anything once one is running.
+  { id: "microservices", label: "Microservices", icon: "⬢" },
   { id: "overview", label: "Overview", icon: "◎" },
   { id: "clusters", label: "Clusters", icon: "▦" },
-  { id: "microservices", label: "Microservices", icon: "⬢" },
-  { id: "services", label: "Services", icon: "◈" },
+  { id: "services", label: "Fleet detail", icon: "◈" },
   { id: "control", label: "Control Plane", icon: "⟳" },
   { id: "reliability", label: "Reliability", icon: "◔" },
   { id: "alerts", label: "Alerts", icon: "△" },
@@ -71,7 +73,7 @@ export function Dashboard({
   token: string;
   onLogout: () => void;
 }) {
-  const [tab, setTab] = useState<Tab>("overview");
+  const [tab, setTab] = useState<Tab>("microservices");
   const [profile, setProfile] = useState<MeResponse | null>(null);
   const [data, setData] = useState<Data | null>(null);
   const [error, setError] = useState<string | null>(null);

@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import {
   ApiError,
+  getBuilds,
   getDeploymentHistory,
   getMicroservices,
+  getRegistry,
   registerMicroservice,
   rollbackDeployment,
+  startBuild,
+  type Build,
   type Cluster,
   type DeploymentRecord,
   type Microservice,
@@ -35,6 +39,17 @@ export function MicroservicesPage({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [showForm, setShowForm] = useState(false);
+  const [builds, setBuilds] = useState<Build[]>([]);
+  const [registry, setRegistry] = useState<{ configured: boolean; url: string } | null>(null);
+  const [showBuild, setShowBuild] = useState(false);
+  const [buildForm, setBuildForm] = useState({
+    gitUrl: "https://github.com/saurav7809/cloud-reliability-platform",
+    gitRef: "main",
+    contextPath: "workloads/sample-service",
+    dockerfile: "Dockerfile",
+    imageName: "aegiscloud/sample-service",
+    tag: "",
+  });
 
   const reachable = clusters.filter((c) => c.status !== "UNREACHABLE");
 
@@ -54,6 +69,8 @@ export function MicroservicesPage({
     try {
       setServices(await getMicroservices(token));
       setHistory(await getDeploymentHistory(token));
+      setBuilds(await getBuilds(token));
+      setRegistry(await getRegistry(token));
       setError(null);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not load microservices");
@@ -106,6 +123,35 @@ export function MicroservicesPage({
       await refresh();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Registration failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleBuild(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const started = await startBuild(token, {
+        clusterName: reachable[0]?.name ?? "",
+        gitUrl: buildForm.gitUrl.trim(),
+        gitRef: buildForm.gitRef.trim() || "main",
+        contextPath: buildForm.contextPath.trim() || ".",
+        dockerfile: buildForm.dockerfile.trim() || "Dockerfile",
+        imageName: buildForm.imageName.trim(),
+        tag: buildForm.tag.trim() || undefined,
+      });
+
+      // The built image name is handed straight to the registration form.
+      // Building an image and then retyping its tag is the sort of gap that
+      // turns two steps into a typo.
+      setForm((f) => ({ ...f, image: started.image }));
+      setShowBuild(false);
+      setShowForm(true);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not start the build");
     } finally {
       setBusy(false);
     }
@@ -166,6 +212,137 @@ export function MicroservicesPage({
           </ol>
         </Card>
       )}
+
+      <Card
+        title="Build an image"
+        meta={registry?.configured ? registry.url : "no registry configured"}
+      >
+        {!registry?.configured ? (
+          <p className="muted">
+            No image registry is configured, so the platform cannot build. Set{" "}
+            <code>AEGISCLOUD_REGISTRY_URL</code> and restart the control plane. A
+            service can still be registered from an image that already exists.
+          </p>
+        ) : (
+          <>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Image</th>
+                    <th>From</th>
+                    <th>Status</th>
+                    <th>When</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {builds.slice(0, 5).map((b) => (
+                    <tr key={b.id}>
+                      <td className="mono small">{b.image}</td>
+                      <td className="small">
+                        {b.gitUrl.replace("https://github.com/", "")} @ {b.contextPath}
+                      </td>
+                      <td>
+                        <Badge
+                          tone={
+                            b.status === "SUCCEEDED"
+                              ? "good"
+                              : b.status === "FAILED"
+                                ? "bad"
+                                : "info"
+                          }
+                        >
+                          {b.status}
+                        </Badge>
+                      </td>
+                      <td className="small">{timeAgo(b.startedAt)}</td>
+                    </tr>
+                  ))}
+                  {builds.length === 0 && (
+                    <tr>
+                      <td colSpan={4} className="muted">
+                        No images built yet. A build runs as a Kaniko job inside the
+                        cluster, so no Docker daemon is involved.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <button className="btn btn-primary" onClick={() => setShowBuild(!showBuild)}>
+              {showBuild ? "Cancel" : "Build from a Git repository"}
+            </button>
+
+            {showBuild && (
+              <form className="register-form" onSubmit={handleBuild}>
+                <label className="field">
+                  <span>Repository</span>
+                  <input
+                    value={buildForm.gitUrl}
+                    onChange={(e) => setBuildForm({ ...buildForm, gitUrl: e.target.value })}
+                    required
+                  />
+                  <small className="field-hint">
+                    Public over HTTPS. Private repositories need credentials the
+                    platform does not yet manage.
+                  </small>
+                </label>
+                <div className="field-row">
+                  <label className="field">
+                    <span>Branch</span>
+                    <input
+                      value={buildForm.gitRef}
+                      onChange={(e) => setBuildForm({ ...buildForm, gitRef: e.target.value })}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Context path</span>
+                    <input
+                      value={buildForm.contextPath}
+                      onChange={(e) =>
+                        setBuildForm({ ...buildForm, contextPath: e.target.value })
+                      }
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Dockerfile</span>
+                    <input
+                      value={buildForm.dockerfile}
+                      onChange={(e) =>
+                        setBuildForm({ ...buildForm, dockerfile: e.target.value })
+                      }
+                    />
+                  </label>
+                </div>
+                <div className="field-row">
+                  <label className="field">
+                    <span>Image name</span>
+                    <input
+                      value={buildForm.imageName}
+                      onChange={(e) =>
+                        setBuildForm({ ...buildForm, imageName: e.target.value })
+                      }
+                      required
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Tag</span>
+                    <input
+                      value={buildForm.tag}
+                      onChange={(e) => setBuildForm({ ...buildForm, tag: e.target.value })}
+                      placeholder="auto"
+                    />
+                  </label>
+                </div>
+                <button className="btn btn-primary" type="submit" disabled={busy}>
+                  {busy ? "Starting..." : "Build"}
+                </button>
+              </form>
+            )}
+          </>
+        )}
+      </Card>
 
       <Card
         title="Registered services"

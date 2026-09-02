@@ -1,52 +1,72 @@
 # AegisCloud
 
-**A cloud-agnostic autonomous reliability platform for microservice applications.** It
-continuously monitors distributed systems, performs controlled failure experiments, automatically
-scales and heals services, analyzes service dependencies and failure propagation, performs
-intelligent root-cause analysis, evaluates application resilience, and recommends cost and
-performance optimizations across heterogeneous cloud environments.
+**A Kubernetes platform for registering Docker images, defining applications and
+microservices, and automatically deploying, running, managing and monitoring them.**
 
-Two words carry the design weight:
+You give AegisCloud an image — or a Git repository it builds one from — say how the
+service should run and what it depends on, and it deploys that service as a Kubernetes
+microservice under management. From that point the platform monitors the service,
+notices when it is under load and scales it, notices when it has failed and recovers
+it, measures its reliability against objectives, and when several services fail at once
+works out which one is actually broken.
 
-- **Autonomous** — the platform closes the loop itself: observe → diagnose → decide → act →
-  verify, rolling back and escalating when an action does not help. Autonomy is a per-action,
-  per-cluster setting that defaults to *suggest only*.
-- **Microservice applications** — the unit of analysis is a *dependency graph*, not one isolated
-  workload. That is what makes failure-propagation and root-cause analysis possible: a checkout
-  failure caused by an auth timeout is only diagnosable if the platform knows checkout calls auth.
+That order matters. Each capability is worth having *because* the platform deployed the
+service in the first place: a system that scales, heals and diagnoses a workload it does
+not control is reasoning about something it cannot act on.
 
-Cloud-agnosticism is structural, not aspirational: every engine reaches clusters only through the
-standard Kubernetes API, so AWS EKS, Azure AKS, GCP GKE and a local kind cluster are
-interchangeable targets rather than special cases.
+Two properties shape the design.
 
-Being built phase by phase. See [docs/phase-1-architecture](docs/phase-1-architecture) for the
-foundational design.
+- **It acts, but only as far as it is permitted.** The loop closes itself — observe,
+  diagnose, decide, act, verify — rolling back and escalating when an action does not
+  help. Autonomy is a per-cluster, per-action setting that starts at *suggest only*.
+- **It reasons about a dependency graph, not one workload.** A checkout failure caused
+  by an auth timeout is only diagnosable if the platform knows checkout calls auth — and
+  here that edge is proved by breaking auth and watching what degrades, not declared.
 
-## What it is
+Cloud-agnosticism is structural rather than aspirational: every engine reaches clusters
+only through the standard Kubernetes API, so EKS, AKS, GKE and a local kind cluster are
+interchangeable targets. Three tests fail the build if a cloud SDK is imported, if any
+code branches on provider type, or if a Kubernetes client is built outside the one
+factory that owns that boundary.
 
-AegisCloud is a Kubernetes platform for registering Docker images, defining
-applications and microservices, and automatically deploying, running, managing and
-monitoring them.
+## The foundation
 
-That core is the foundation, and everything else exists because of it. Once the
-platform is running a service it deployed, it can measure that service, notice when
-it is under load and scale it, notice when it has failed and recover it, break it on
-purpose to find out what depends on it, and diagnose which of several failing
-services is the one actually broken. None of those capabilities would mean anything
-against a service the platform had merely been told about.
+Give AegisCloud a Docker image, configure the service, and it runs as a Kubernetes
+microservice under management. That is the whole product, and it works today:
 
-The backend is one modular Spring Boot application, not a distributed system of its
-own. A control plane made of microservices would be a second reliability problem to
-solve before the first one had been solved, and the module boundaries in the source
-tree — `k8s`, `eval`, `engine`, `experiment`, `graph`, `rca`, `optimize`, `alerting`
-— already give the separation that matters. The single exception is the Python AI
-service, which is a separate process because it does a different kind of work, and
-which the platform runs perfectly well without.
+| Step | How |
+|---|---|
+| Build an image | `POST /api/v1/builds` — a Kaniko Job in the cluster, from a Git repository, pushed to the registry. No Docker daemon, no privileged access. |
+| Register a service | `POST /api/v1/microservices` — declares it, deploys the image with its dependency wiring, creates the Service, registers it as managed, starts probing it, gives it SLOs. |
+| Run it | Deployment + ClusterIP Service, resource requests, health probes, dependencies passed as environment. |
+| See it | The Microservices page: what is registered, live cluster state beside recorded state, deployment history, rollback. |
+
+Everything below exists because of that. A platform that scales, heals, measures and
+diagnoses a service it did not deploy is reasoning about something it does not control;
+each capability is worth having precisely because the service arrived through the step
+above.
+
+## Capabilities built on it
+
+| Capability | What it does once a service is running |
+|---|---|
+| Evaluation | Probes the service's working endpoint, evaluates SLOs, computes error budgets and a reliability score from measurements |
+| Auto-scaling | CPU, latency and trend strategies with a flapping guard — verified scaling a service 1 → 8 under real load |
+| Self-healing | Kubernetes watches detect a failing pod in seconds; a crash loop is replaced, an unpullable image is escalated rather than restarted forever |
+| Policy & autonomy | Every autonomous action is policy-checked and starts at SUGGEST; ACT is granted per cluster and per action type |
+| Chaos experiments | Breaks a service on purpose with safety rules, a steady-state hypothesis and a guaranteed restore |
+| Dependency graph | Blast radius, single points of failure and critical path — with edges *proved* by breaking a service and watching what degraded |
+| Root cause analysis | Ranks candidates across four signals with cited evidence, and labels symptoms as symptoms |
+| Optimization | Cost and performance advice that withholds a saving rather than trading away reliability |
+| Multi-tenancy | The organisation boundary enforced inside every query, verified across two tenants |
+| AI service | Anomaly detection, forecasting and RCA re-ranking, in Python, entirely optional |
+
+## Architecture
 
 ```
 React + TypeScript
         |
-   Spring Boot control plane
+   Spring Boot control plane        one modular application, not a distributed system
         |
   +-----+-----+-----------+
   |           |           |
@@ -57,7 +77,24 @@ PostgreSQL  Redis   Kubernetes API
                      microservices
 ```
 
-## Phases
+The control plane is a single Spring Boot application with module boundaries in the
+source tree — `k8s`, `build`, `eval`, `engine`, `experiment`, `graph`, `rca`,
+`optimize`, `alerting`, `audit`. Splitting it into services of its own would create a
+second reliability problem to solve before the first one was solved. The one separate
+process is the Python AI service, because it does a different kind of work, and the
+platform runs without it by design.
+
+## Build order
+
+The capabilities were built before the foundation, which was the wrong order and
+instructive anyway: building the real deployment path is what exposed the bugs in
+everything above it. Registration was not idempotent, so re-registering doubled a
+service's probes. Rollback did not record itself, so history disagreed with the
+cluster. Self-healing recognised only `CrashLoopBackOff`, not the state a crashing pod
+reports between restarts, so the watch fired and nothing healed. None of those were
+visible against seeded data.
+
+## Phase history
 
 | Phase | Status |
 |---|---|
