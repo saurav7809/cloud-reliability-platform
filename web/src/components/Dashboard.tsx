@@ -31,14 +31,20 @@ import { ControlPlanePage } from "../pages/ControlPlanePage";
 import { ReliabilityPage } from "../pages/ReliabilityPage";
 import { AlertsPage } from "../pages/AlertsPage";
 import { MicroservicesPage } from "../pages/MicroservicesPage";
+import { DiagnosticsPage } from "../pages/DiagnosticsPage";
+import { GraphPage } from "../pages/GraphPage";
+import { OptimizationPage } from "../pages/OptimizationPage";
 
 type Tab =
+  | "microservices"
   | "overview"
   | "clusters"
-  | "microservices"
   | "services"
   | "control"
   | "reliability"
+  | "graph"
+  | "diagnostics"
+  | "optimization"
   | "alerts";
 
 const NAV: { id: Tab; label: string; icon: string }[] = [
@@ -50,6 +56,9 @@ const NAV: { id: Tab; label: string; icon: string }[] = [
   { id: "services", label: "Fleet detail", icon: "◈" },
   { id: "control", label: "Control Plane", icon: "⟳" },
   { id: "reliability", label: "Reliability", icon: "◔" },
+  { id: "graph", label: "Dependencies", icon: "⇄" },
+  { id: "diagnostics", label: "Diagnostics", icon: "◇" },
+  { id: "optimization", label: "Optimization", icon: "◐" },
   { id: "alerts", label: "Alerts", icon: "△" },
 ];
 
@@ -175,6 +184,9 @@ export function Dashboard({
             {tab === "clusters" && (
               <ClustersPage clusters={data.clusters} policies={data.policies} />
             )}
+            {tab === "graph" && <GraphPage token={token} />}
+            {tab === "diagnostics" && <DiagnosticsPage token={token} />}
+            {tab === "optimization" && <OptimizationPage token={token} />}
             {tab === "microservices" && (
               <MicroservicesPage token={token} clusters={data.clusters} />
             )}

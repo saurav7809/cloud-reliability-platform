@@ -279,24 +279,64 @@ public class RcaStore {
                 rs.getTimestamp(6).toInstant(), rs.getTimestamp(7).toInstant()), orgId, limit);
     }
 
-    /** Targets whose score dipped during a given window — the candidates for a past incident. */
+    /**
+     * How far a score must fall inside the window to count as degraded by whatever
+     * happened in it.
+     *
+     * <p>Five points is comfortably above probe-to-probe jitter and well below what
+     * an outage produces.
+     */
+    private static final double MATERIAL_DROP = 5.0;
+
+    /**
+     * Targets degraded during a past window — the candidates for an incident that has
+     * already happened.
+     *
+     * <p>Degradation here means a <em>drop</em>, not a level, and that distinction is
+     * the difference between this measurement working and not. A short incident
+     * inside a longer score window barely moves the absolute number: a 48-second
+     * outage against a five-minute window took the service that was scaled to zero
+     * from 100 to 91.3, which is nowhere near an 80 threshold — while a downstream
+     * service that failed for other reasons too sat at 75.8 and looked like the only
+     * candidate. Asking "who is below 80?" therefore excluded the service the
+     * platform had itself taken down, and the accuracy figure measured the threshold
+     * rather than the engine.
+     *
+     * <p>The absolute threshold is kept as a second trigger, for a service that was
+     * already unhealthy before the window and stayed that way.
+     */
     public List<DegradedTarget> targetsDegradedDuring(UUID orgId, Instant from, Instant to,
                                                       double scoreBelow) {
         return jdbc.query("""
-                SELECT DISTINCT t.id, t.service_id, s.name AS service_name, t.namespace,
+                WITH baseline AS (
+                    SELECT DISTINCT ON (target_id) target_id, score
+                    FROM reliability_score_snapshot
+                    WHERE window_end < ?
+                    ORDER BY target_id, window_end DESC
+                ),
+                during AS (
+                    SELECT target_id, min(score) AS worst
+                    FROM reliability_score_snapshot
+                    WHERE window_end BETWEEN ? AND ?
+                    GROUP BY target_id
+                )
+                SELECT t.id, t.service_id, s.name AS service_name, t.namespace,
                        c.name AS cluster_name, c.kubeconfig_ref, s.name AS workload,
-                       min(snap.score) AS worst
-                FROM reliability_score_snapshot snap
-                JOIN deployment_target t ON t.id = snap.target_id
+                       d.worst
+                FROM during d
+                JOIN deployment_target t ON t.id = d.target_id
                 JOIN service s ON s.id = t.service_id
                 JOIN cluster c ON c.id = t.cluster_id
-                WHERE snap.window_end BETWEEN ? AND ? AND snap.score < ? AND c.org_id = ?
-                GROUP BY t.id, t.service_id, s.name, t.namespace, c.name, c.kubeconfig_ref
+                LEFT JOIN baseline b ON b.target_id = d.target_id
+                WHERE c.org_id = ?
+                  AND (d.worst < ? OR (b.score IS NOT NULL AND d.worst <= b.score - ?))
+                ORDER BY d.worst
                 """, (rs, n) -> new DegradedTarget(
                 UUID.fromString(rs.getString(1)), UUID.fromString(rs.getString(2)),
                 rs.getString(3), rs.getString(4), rs.getString(5), rs.getString(6),
                 rs.getString(7), rs.getDouble(8)),
-                Timestamp.from(from), Timestamp.from(to), scoreBelow, orgId);
+                Timestamp.from(from), Timestamp.from(from), Timestamp.from(to),
+                orgId, scoreBelow, MATERIAL_DROP);
     }
 
     private String toJson(Object value) {

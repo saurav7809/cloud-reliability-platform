@@ -665,3 +665,31 @@ tbody tr:hover td {
 .btn-ghost:disabled { opacity: 0.5; cursor: not-allowed; }
 
 td.small, .small { font-size: 12px; }
+
+
+/* Diagnostics: a verdict and the facts under it. */
+.verdict { border-top: 1px solid var(--border, #232b3b); padding: 12px 0; }
+.verdict:first-of-type { border-top: none; }
+.verdict-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.verdict-rank { color: var(--dim, #5d6879); font-family: var(--mono, monospace); }
+.verdict-actions { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+
+.evidence { margin: 8px 0 0; padding-left: 18px; font-size: 13px; line-height: 1.7;
+            color: var(--text, #8b96ab); }
+.evidence-signal { display: inline-block; min-width: 130px; color: var(--dim, #5d6879);
+                   font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+/* Evidence arguing against a candidate reads differently, because it means the
+   opposite of everything above it. */
+.evidence-against { color: var(--warn, #f5a524); }
+
+.graph-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+               gap: 18px; }
+.graph-facts h4 { margin: 0 0 4px; font-size: 13px; color: var(--strong, #e6ebf4); }
+.graph-facts p { margin: 0 0 6px; }
+.spof { margin: 6px 0; font-size: 13px; }
+
+.stat-line { margin: 10px 0; font-size: 13px; color: var(--text, #8b96ab); }
+.stat-line strong { color: var(--strong, #e6ebf4); }
+
+.row-clickable { cursor: pointer; }
+.row-selected { background: rgba(79, 140, 255, 0.08); }

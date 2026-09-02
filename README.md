@@ -221,6 +221,46 @@ Six screens over the platform API, styled as a dark operator console:
 
 ## Verified So Far
 
+### The capabilities, in the browser
+
+Three pages the dashboard was missing, each showing what the API had been able to
+answer for weeks and nobody could see:
+
+- **Dependencies** — the graph, blast radius, single points of failure and the critical
+  path. Edges proved by experiment are marked as such, because an edge found by
+  breaking a service is stronger evidence than one declared.
+- **Diagnostics** — incidents, ranked verdicts, and the evidence under each one in
+  full, including the facts that argue *against* a candidate. A human can mark a
+  verdict right or wrong.
+- **Optimization** — advice with its reliability impact, where withheld savings are
+  shown beside safe ones rather than hidden. Apply is disabled with the reason, so
+  the platform's refusal is visible instead of mysterious.
+
+Verified by checking every field each page reads against the live API, and by a
+production build (`245 kB`, `74 kB` gzipped).
+
+### A measurement that was measuring the wrong thing
+
+Bringing the accuracy figure onto the Diagnostics page showed it had fallen from 1.00
+to 0.00 — and the cause was the harness, not the engine.
+
+Retrospective analysis asked "which services were below 80 during the incident
+window?" During a 48-second outage inside a five-minute score window:
+
+```
+storefront  75.8   ← below the threshold, so treated as the only candidate
+catalog     91.3   ← the service the platform had itself scaled to zero
+```
+
+A short incident barely moves a longer-window score, so the true cause sat above the
+line while a symptom dipped below it, and the accuracy number reflected the threshold
+rather than the diagnosis. An incident is a **change**, not a level: retrospective
+candidacy is now a material drop against the service's own score just before the
+window, with the absolute threshold kept as a second trigger for a service that was
+already unhealthy. Precision@1 is 1.00 again, on the same data, for the right reason.
+
+
+
 ### The end-to-end story, run in one sitting
 
 Deploy from an image, monitor it, detect load, scale it, detect failure, recover it,

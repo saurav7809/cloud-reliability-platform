@@ -426,3 +426,153 @@ export const startBuild = (t: string, body: StartBuild) =>
 /** Whether this deployment has a registry to push built images to. */
 export const getRegistry = (t: string) =>
   authed<{ configured: boolean; url: string; note: string }>("/api/v1/registry", t);
+
+/* ------------------------------- diagnostics -------------------------------- */
+
+export interface Incident {
+  id: string;
+  title: string;
+  status: string;
+  rootCauseService: string | null;
+  confidence: number | null;
+  blastRadiusCount: number;
+  startedAt: string;
+  resolvedAt: string | null;
+}
+
+/** A ranked candidate with the facts behind it. An unexplained verdict is never shown. */
+export interface Verdict {
+  rank: number;
+  serviceName: string;
+  targetId: string;
+  confidence: number;
+  reasoning: string;
+  evidence: {
+    assessment?: string;
+    facts?: { signal: string; weight: number; detail: string }[];
+  };
+  signalScores: Record<string, number>;
+  humanVerdict: string | null;
+}
+
+export const getIncidents = (t: string) => authed<Incident[]>("/api/v1/incidents", t);
+
+export const getIncident = (t: string, id: string) =>
+  authed<{ incident: Incident; verdicts: Verdict[] }>(`/api/v1/incidents/${id}`, t);
+
+/** Diagnoses whatever is degraded now; returns a status object when nothing is. */
+export const diagnoseNow = (t: string) =>
+  authed<{ incidentId?: string; title?: string; summary?: string; status?: string }>(
+    "/api/v1/incidents/diagnose",
+    t,
+    { method: "POST" },
+  );
+
+export const judgeVerdict = (t: string, incidentId: string, rank: number, verdict: string) =>
+  authed<unknown>(`/api/v1/incidents/${incidentId}/judge`, t, {
+    method: "POST",
+    body: JSON.stringify({ rank, verdict }),
+  });
+
+/** Measured against chaos runs, whose true cause the platform knows because it caused them. */
+export const getRcaAccuracy = (t: string) =>
+  authed<{ correct: number; total: number; precisionAt1: number; detail: string[] }>(
+    "/api/v1/rca/accuracy",
+    t,
+  );
+
+/* ---------------------------------- graph ----------------------------------- */
+
+export interface GraphEdge {
+  callerName: string;
+  calleeName: string;
+  discoverySource: string;
+  callRatePerMin: number;
+  latencyP95Ms: number;
+}
+
+export interface GraphView {
+  serviceCount: number;
+  edgeCount: number;
+  edges: GraphEdge[];
+  entryPoints: string[];
+  isolatedServices: string[];
+  criticalPath: string[];
+  singlePointsOfFailure: { serviceName: string; isolated: string[]; reason: string }[];
+  mostCritical: { serviceName: string; affected: string[] }[];
+}
+
+export const getGraph = (t: string) => authed<GraphView>("/api/v1/graph", t);
+
+/* ------------------------------ recommendations ----------------------------- */
+
+export interface Recommendation {
+  id: string;
+  serviceName: string;
+  clusterName: string;
+  kind: string;
+  title: string;
+  rationale: string;
+  evidence: Record<string, unknown>;
+  estimatedMonthlySavingUsd: number;
+  reliabilityImpact: string;
+  status: string;
+  outcome: string | null;
+}
+
+export const getRecommendations = (t: string, status?: string) =>
+  authed<Recommendation[]>(
+    `/api/v1/recommendations${status ? `?status=${status}` : ""}`,
+    t,
+  );
+
+export const refreshRecommendations = (t: string) =>
+  authed<{ recommendations: number; withheld: number; totalMonthlySavingUsd: number }>(
+    "/api/v1/recommendations/refresh",
+    t,
+    { method: "POST" },
+  );
+
+export const applyRecommendation = (t: string, id: string) =>
+  authed<{ status: string; detail: string }>(`/api/v1/recommendations/${id}/apply`, t, {
+    method: "POST",
+  });
+
+export const dismissRecommendation = (t: string, id: string, reason: string) =>
+  authed<{ status: string; detail: string }>(`/api/v1/recommendations/${id}/dismiss`, t, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+
+/* -------------------------------- experiments ------------------------------- */
+
+export interface ExperimentRow {
+  id: string;
+  status: string;
+  targetLabel: string;
+  faultSpec: Record<string, unknown>;
+  scoreBefore: number | null;
+  scoreDuring: number | null;
+  scoreAfter: number | null;
+  startedAt: string;
+  endedAt: string | null;
+}
+
+export const startExperiment = (
+  t: string,
+  body: {
+    targetId: string;
+    faultType: string;
+    magnitude: number;
+    durationSeconds: number;
+    dependencyTargetId?: string;
+    abortIfScoreBelow?: number;
+  },
+) =>
+  authed<{ runId: string; status: string; detail: string }>("/api/v1/experiments", t, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+
+export const getExperiment = (t: string, runId: string) =>
+  authed<ExperimentRow>(`/api/v1/experiments/${runId}`, t);
